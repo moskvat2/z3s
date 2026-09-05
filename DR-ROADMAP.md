@@ -50,9 +50,9 @@ flowchart LR
 - [x] 3.2. Confirmar a queda do nó primário (clientes recebem `Connection Refused / 503 Service Unavailable`).
 
 ### Fase 4: Ativação do Failover e Promoção do Nó de DR (`172.16.0.104`)
-- [ ] 4.1. Promover o Nó 2 (`172.16.0.104`) a Primário Ativo.
-- [ ] 4.2. Iniciar o serviço Z3S no Nó 2 e executar a recuperação automática de WAL e catálogo de extents.
-- [ ] 4.3. Medir o tempo exato de recuperação (**RTO**).
+- [x] 4.1. Promover o Nó 2 (`172.16.0.104`) a Primário Ativo.
+- [x] 4.2. Iniciar o serviço Z3S no Nó 2 e executar a recuperação automática de WAL e catálogo de extents.
+- [x] 4.3. Medir o tempo exato de recuperação (**RTO: 1,07 segundos**).
 
 ### Fase 5: Validação de Integridade e Operações em Modo DR
 - [ ] 5.1. Listar buckets e objetos no Nó 2 promovido via AWS CLI.
