@@ -1,0 +1,65 @@
+{
+  "dr-critical-database/db_backup_full.sql": {
+    "bucket": "dr-critical-database",
+    "key": "db_backup_full.sql",
+    "size": 524288,
+    "sha256": "fa2f116e9034059f8cc201f099580ddf6e5037d6963e25473c21e4aada2103cb",
+    "description": "Database SQL dump"
+  },
+  "dr-critical-database/config.json": {
+    "bucket": "dr-critical-database",
+    "key": "config.json",
+    "size": 16384,
+    "sha256": "962aa8978d2726a2482cba843712d94e7794e53b2fec751548e7cc955941199b",
+    "description": "System config JSON"
+  },
+  "dr-critical-database/schema.sql": {
+    "bucket": "dr-critical-database",
+    "key": "schema.sql",
+    "size": 65536,
+    "sha256": "e4750802d192c5f254e1313a1de9fb4f1db201c43e9ffa6a395233d0cd64f73b",
+    "description": "Schema definition"
+  },
+  "dr-media-vault/video_asset_1mb.mp4": {
+    "bucket": "dr-media-vault",
+    "key": "video_asset_1mb.mp4",
+    "size": 1048576,
+    "sha256": "6bdf55e52afe1046c5b820a679690e16755db778e1d071ff9bdad1ce72ec3779",
+    "description": "1MB Video media chunk"
+  },
+  "dr-media-vault/image_sample_5mb.raw": {
+    "bucket": "dr-media-vault",
+    "key": "image_sample_5mb.raw",
+    "size": 5242880,
+    "sha256": "fb358b1215b8b68e4a6afd2e00299f9aa05e4a0cb945bd506268f690a3ed6406",
+    "description": "5MB Raw image payload"
+  },
+  "dr-media-vault/documents.pdf": {
+    "bucket": "dr-media-vault",
+    "key": "documents.pdf",
+    "size": 131072,
+    "sha256": "dac8d1a0c18c85e12fe5c1489524755eeee70947433621a79c92de172b98e9ea",
+    "description": "PDF Documentation"
+  },
+  "dr-financial-records/transactions_q1.csv": {
+    "bucket": "dr-financial-records",
+    "key": "transactions_q1.csv",
+    "size": 262144,
+    "sha256": "f93cbd76dcf5afbaa43bf1b903d48aa0f97f3ffef79ecae0a3196a584333925d",
+    "description": "Financial transaction CSV"
+  },
+  "dr-financial-records/audit_ledger.bin": {
+    "bucket": "dr-financial-records",
+    "key": "audit_ledger.bin",
+    "size": 819200,
+    "sha256": "c05f64fe0d86d2e4363829c7756234603efb0d74cf71319b6973f141662021f0",
+    "description": "Cryptographic audit ledger"
+  },
+  "dr-financial-records/invoices_2026.xml": {
+    "bucket": "dr-financial-records",
+    "key": "invoices_2026.xml",
+    "size": 32768,
+    "sha256": "7ec4a6f523d497f246f2833efcb9f2646dafa30b236107f479599993d32f7bde",
+    "description": "Invoicing XML metadata"
+  }
+}

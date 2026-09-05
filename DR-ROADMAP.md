@@ -41,9 +41,9 @@ flowchart LR
 - [x] 1.4. Validar permissões e execução local no Nó 2.
 
 ### Fase 2: Carga Inicial e Pipeline de Sincronização Contínua (Replication Engine)
-- [ ] 2.1. Criar buckets e gravar conjunto de objetos de controle com metadados e hashes conhecidos no Nó 1 (`172.16.0.100`).
-- [ ] 2.2. Estabelecer o pipeline de sincronização contínua de blocos (Extents, WAL e Metadados) entre o Nó 1 e o Nó 2.
-- [ ] 2.3. Confirmar que o estado do Nó 2 está perfeitamente espelhado com o Nó 1.
+- [x] 2.1. Criar buckets e gravar conjunto de objetos de controle com metadados e hashes conhecidos no Nó 1 (`172.16.0.100`).
+- [x] 2.2. Estabelecer o pipeline de sincronização contínua de blocos (Extents, WAL e Metadados) entre o Nó 1 e o Nó 2.
+- [x] 2.3. Confirmar que o estado do Nó 2 está perfeitamente espelhado com o Nó 1.
 
 ### Fase 3: Simulação de Desastre Catastrófico no Nó Primário (Simulated Outage)
 - [ ] 3.1. Simular falha abrupta e completa do Nó 1 (`172.16.0.100`) via parada forçada do serviço / isolamento de rede.
