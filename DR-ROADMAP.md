@@ -35,10 +35,10 @@ flowchart LR
 ## 📋 Fases do Plano de Execução do DR
 
 ### Fase 1: Provisionamento e Padronização do Nó de DR (`172.16.0.104`)
-- [ ] 1.1. Transferir o binário estático de produção `z3s-server` para `/usr/local/bin/z3s-server`.
-- [ ] 1.2. Criar a árvore de diretórios de armazenamento no disco `/mnt/dados/z3s-data`.
-- [ ] 1.3. Instalar e configurar o serviço OpenRC `/etc/init.d/z3s` no nó secundário.
-- [ ] 1.4. Validar permissões e execução local no Nó 2.
+- [x] 1.1. Transferir o binário estático de produção `z3s-server` para `/usr/local/bin/z3s-server`.
+- [x] 1.2. Criar a árvore de diretórios de armazenamento no disco `/mnt/dados/z3s-data`.
+- [x] 1.3. Instalar e configurar o serviço OpenRC `/etc/init.d/z3s` no nó secundário.
+- [x] 1.4. Validar permissões e execução local no Nó 2.
 
 ### Fase 2: Carga Inicial e Pipeline de Sincronização Contínua (Replication Engine)
 - [ ] 2.1. Criar buckets e gravar conjunto de objetos de controle com metadados e hashes conhecidos no Nó 1 (`172.16.0.100`).
