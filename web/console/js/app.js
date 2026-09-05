@@ -106,8 +106,8 @@ function AwsSignInView({ onLogin }) {
       const session = AuthManager.setSession(endpoint, accessKey.trim(), secretKey.trim(), region, rememberMe);
       onLogin(session);
     } catch (err) {
-      console.error(err);
-      setError("Falha na autenticação: Credenciais inválidas ou sem permissão de acesso ao S3.");
+      console.error("Login error:", err);
+      setError(err.message || "Falha na autenticação: Credenciais inválidas ou sem permissão de acesso ao S3.");
     } finally {
       setLoading(false);
     }
@@ -139,12 +139,12 @@ function AwsSignInView({ onLogin }) {
               <span className="font-bold">⚠️</span>
               <div>
                 <p className="font-semibold">Erro de autenticação</p>
-                <p>{error}</p>
+                <p className="mt-0.5">{error}</p>
               </div>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-[#16191f] uppercase tracking-wider mb-1.5">
                 Access Key ID
@@ -196,20 +196,60 @@ function AwsSignInView({ onLogin }) {
               </label>
             </div>
 
+            {/* Quick credentials shortcuts for development */}
+            <div className="pt-1 pb-1">
+              <span className="text-[11px] text-[#545b64] block mb-1.5 font-semibold">Preenchimento Rápido (Dev):</span>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccessKey("Z3SACCESSKEYEXAMPLE");
+                    setSecretKey("Z3SSECRETKEYEXAMPLE1234567890ABCDEF");
+                  }}
+                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
+                >
+                  Z3S Root
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccessKey("admin");
+                    setSecretKey("admin123456");
+                  }}
+                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
+                >
+                  admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccessKey("z3sadmin");
+                    setSecretKey("z3sadminsecretkey");
+                  }}
+                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
+                >
+                  z3sadmin
+                </button>
+              </div>
+            </div>
+
             <button
               type="submit"
               disabled={loading}
               className="w-full h-10 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white font-bold text-sm rounded shadow-sm transition flex items-center justify-center space-x-2"
             >
               {loading ? (
-                <span>Autenticando...</span>
+                <>
+                  <span className="animate-spin">🔄</span>
+                  <span>Autenticando...</span>
+                </>
               ) : (
                 <span>Sign in</span>
               )}
             </button>
           </form>
 
-          <div className="mt-8 pt-6 border-t border-slate-200 text-center text-xs text-[#545b64]">
+          <div className="mt-6 pt-4 border-t border-slate-200 text-center text-xs text-[#545b64]">
             Z3S Object Storage Engine &bull; AWS SigV4 RFC 3986
           </div>
         </div>

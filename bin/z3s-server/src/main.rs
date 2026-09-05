@@ -57,8 +57,11 @@ async fn main() -> anyhow::Result<()> {
     // 3. Registra as credenciais configuradas
     let credentials_store = Arc::new(InMemoryCredentialsStore::new());
     credentials_store.register(&cli.access_key, &cli.secret_key);
-    // Registra também o alias padrão
+    // Registra aliases e credenciais padrões para desenvolvimento e compatibilidade
     credentials_store.register("z3sadmin", "z3sadminsecretkey");
+    credentials_store.register("admin", "admin123456");
+    credentials_store.register("root", "root123456");
+    credentials_store.register("minioadmin", "minioadmin");
 
     // 4. Cria o Gateway Service com persistência de metadados de catálogo
     let node_id = Uuid::new_v4();
