@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Z3S Storage Console — AWS S3 Compatible</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React 18 & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel Standalone for JSX transformation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Custom CSS Styles -->
+  <link rel="stylesheet" href="/console/css/style.css" />
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased selection:bg-blue-600 selection:text-white">
+  <div id="root"></div>
+
+  <!-- S3 Client & Auth Scripts -->
+  <script src="/console/js/s3-client.js"></script>
+  <script src="/console/js/auth.js"></script>
+  
+  <!-- Main React Application -->
+  <script type="text/babel" src="/console/js/app.js"></script>
+</body>
+</html>

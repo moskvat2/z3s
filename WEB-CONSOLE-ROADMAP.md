@@ -46,13 +46,13 @@ flowchart LR
 ---
 
 ### 📌 Fase 1: Fundação, Autenticação & Gateway Embutido
-- [ ] **1.1. Servidor de Assets Estáticos Embutidos:**
+- [x] **1.1. Servidor de Assets Estáticos Embutidos:**
   - Configurar rota `/console` e `/console/*` no `z3s-gateway` para servir a SPA HTML/CSS/JS diretamente da memória.
-- [ ] **1.2. Tela de Autenticação / Login:**
+- [x] **1.2. Tela de Autenticação / Login:**
   - Login com `Access Key ID` e `Secret Access Key`.
   - Armazenamento seguro de sessão criptografada no `sessionStorage`/`localStorage`.
   - Botão de logout e auto-redirecionamento para sessão expirada.
-- [ ] **1.3. Layout Base & Design System:**
+- [x] **1.3. Layout Base & Design System:**
   - Barra de navegação lateral (Sidebar) expansível/retrátil.
   - Header superior com indicador de status do nó, seletor de tema (**Dark / Light Mode**) e menu de usuário.
   - Sistema de notificações Toast (sucesso, erro, alerta, progresso).

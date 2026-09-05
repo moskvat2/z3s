@@ -82,9 +82,11 @@ impl HttpServer {
                             builder = builder.header("content-length", body_len.to_string());
                         }
 
-                        // Headers padrões essenciais do ecossistema AWS S3
+                        // Headers padrões essenciais do ecossistema AWS S3 e suporte a Web Console CORS
                         builder = builder
                             .header("server", "Z3S/1.0")
+                            .header("access-control-allow-origin", "*")
+                            .header("access-control-expose-headers", "ETag, x-amz-request-id, x-amz-version-id, Content-Length, Content-Type")
                             .header("x-amz-request-id", uuid::Uuid::new_v4().to_string());
 
                         let body: BoxedBody = Full::new(gateway_resp.body)

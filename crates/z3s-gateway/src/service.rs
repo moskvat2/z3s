@@ -530,6 +530,70 @@ impl S3GatewayService {
         headers: &HashMap<String, String>,
         body: &[u8],
     ) -> GatewayHttpResponse {
+        // 1. Suporte a CORS Preflight OPTIONS para requisições de navegadores web
+        if method.eq_ignore_ascii_case("OPTIONS") {
+            let mut resp_headers = HashMap::new();
+            resp_headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+            resp_headers.insert(
+                "access-control-allow-methods".to_string(),
+                "GET, PUT, POST, DELETE, HEAD, OPTIONS".to_string(),
+            );
+            resp_headers.insert("access-control-allow-headers".to_string(), "*".to_string());
+            resp_headers.insert(
+                "access-control-expose-headers".to_string(),
+                "ETag, x-amz-request-id, x-amz-version-id, Content-Length, Content-Type".to_string(),
+            );
+            resp_headers.insert("access-control-max-age".to_string(), "86400".to_string());
+            return GatewayHttpResponse {
+                status: 200,
+                headers: resp_headers,
+                body: Bytes::new(),
+            };
+        }
+
+        // 2. Rota para servir o Z3S Web Console Embutido (React 18 SPA)
+        if path.starts_with("/console") || path == "/console" {
+            let clean_path = path.trim_start_matches("/console").trim_start_matches('/');
+            let (content_type, body_str) = match clean_path {
+                "" | "index.html" => (
+                    "text/html; charset=utf-8",
+                    include_str!("../../../web/console/index.html"),
+                ),
+                "css/style.css" => (
+                    "text/css; charset=utf-8",
+                    include_str!("../../../web/console/css/style.css"),
+                ),
+                "js/app.js" => (
+                    "application/javascript; charset=utf-8",
+                    include_str!("../../../web/console/js/app.js"),
+                ),
+                "js/auth.js" => (
+                    "application/javascript; charset=utf-8",
+                    include_str!("../../../web/console/js/auth.js"),
+                ),
+                "js/s3-client.js" => (
+                    "application/javascript; charset=utf-8",
+                    include_str!("../../../web/console/js/s3-client.js"),
+                ),
+                _ => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::NoSuchKey,
+                        "Asset do Web Console não encontrado",
+                        Some(path.to_string()),
+                    )
+                }
+            };
+
+            let mut resp_headers = HashMap::new();
+            resp_headers.insert("content-type".to_string(), content_type.to_string());
+            resp_headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+            return GatewayHttpResponse {
+                status: 200,
+                headers: resp_headers,
+                body: Bytes::from(body_str),
+            };
+        }
+
         if let Err(err_code) = self.authenticate(method, path, query, headers) {
             return GatewayHttpResponse::error(
                 err_code,
