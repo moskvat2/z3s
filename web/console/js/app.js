@@ -37,7 +37,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f2f3f3] text-[#16191f] font-sans antialiased flex flex-col selection:bg-[#ec7211] selection:text-white">
+    <div className="min-h-screen bg-[#f2f3f3] text-[#16191f] font-sans antialiased flex flex-col selection:bg-[#2563eb] selection:text-white">
       {/* 1. AWS Top Navigation Bar */}
       <AwsGlobalHeader 
         session={session} 
@@ -118,7 +118,7 @@ function AwsSignInView({ onLogin }) {
       {/* Top Brand Bar */}
       <header className="h-14 bg-[#161e2d] border-b border-[#2a384c] px-8 flex items-center">
         <div className="flex items-center space-x-3">
-          <svg className="w-8 h-8 text-[#ec7211]" viewBox="0 0 24 24" fill="currentColor">
+          <svg className="w-8 h-8 text-[#2563eb]" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.6.1 2.78 1.41 2.78 2.96 0 1.65-1.35 3-3 3z"/>
           </svg>
           <span className="text-white font-bold text-lg tracking-tight">Z3S Storage Console</span>
@@ -156,7 +156,7 @@ function AwsSignInView({ onLogin }) {
                 required
                 autoFocus
                 placeholder="ex: Z3SACCESSKEYEXAMPLE"
-                className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#ec7211] focus:ring-1 focus:ring-[#ec7211] text-sm text-[#16191f] font-mono transition"
+                className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] text-sm text-[#16191f] font-mono transition"
               />
             </div>
 
@@ -179,7 +179,7 @@ function AwsSignInView({ onLogin }) {
                 onChange={e => setSecretKey(e.target.value)}
                 required
                 placeholder="••••••••••••••••"
-                className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#ec7211] focus:ring-1 focus:ring-[#ec7211] text-sm text-[#16191f] font-mono transition"
+                className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] text-sm text-[#16191f] font-mono transition"
               />
             </div>
 
@@ -189,7 +189,7 @@ function AwsSignInView({ onLogin }) {
                 type="checkbox"
                 checked={rememberMe}
                 onChange={e => setRememberMe(e.target.checked)}
-                className="w-4 h-4 text-[#ec7211] border-[#aab7b8] rounded focus:ring-[#ec7211]"
+                className="w-4 h-4 text-[#2563eb] border-[#aab7b8] rounded focus:ring-[#2563eb]"
               />
               <label htmlFor="rememberMe" className="ml-2 text-xs text-[#545b64] cursor-pointer">
                 Lembrar credenciais neste navegador
@@ -199,7 +199,7 @@ function AwsSignInView({ onLogin }) {
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-10 bg-[#ec7211] hover:bg-[#eb5f07] active:bg-[#dd5000] text-white font-bold text-sm rounded shadow-sm transition flex items-center justify-center space-x-2"
+              className="w-full h-10 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white font-bold text-sm rounded shadow-sm transition flex items-center justify-center space-x-2"
             >
               {loading ? (
                 <span>Autenticando...</span>
@@ -236,10 +236,10 @@ function AwsGlobalHeader({ session, onLogout, onNavigateHome }) {
           onClick={onNavigateHome}
           className="flex items-center space-x-2 hover:opacity-90 transition focus:outline-none"
         >
-          <div className="w-6 h-6 bg-[#ec7211] rounded flex items-center justify-center font-bold text-xs text-white">
+          <div className="w-6 h-6 bg-[#2563eb] rounded flex items-center justify-center font-bold text-xs text-white">
             S3
           </div>
-          <span className="font-bold text-sm tracking-tight text-white">Amazon S3</span>
+          <span className="font-bold text-sm tracking-tight text-white">Z3S S3 Console</span>
         </button>
 
         <div className="hidden md:flex items-center space-x-2 pl-4 border-l border-[#2a384c]">
@@ -253,7 +253,7 @@ function AwsGlobalHeader({ session, onLogout, onNavigateHome }) {
           <input 
             type="text" 
             placeholder="Search for buckets, objects, features [Alt+S]" 
-            className="w-full h-8 pl-8 pr-3 bg-[#0e1622] border border-[#3e4f67] rounded text-xs text-slate-200 placeholder-[#879596] focus:outline-none focus:border-[#ec7211]"
+            className="w-full h-8 pl-8 pr-3 bg-[#0e1622] border border-[#3e4f67] rounded text-xs text-slate-200 placeholder-[#879596] focus:outline-none focus:border-[#2563eb]"
           />
           <span className="absolute left-2.5 top-2 text-xs text-[#879596]">🔍</span>
         </div>
@@ -330,7 +330,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
     <div className="space-y-4">
       {/* Breadcrumbs */}
       <div className="text-xs text-[#545b64] flex items-center space-x-1.5">
-        <span className="hover:underline cursor-pointer">Amazon S3</span>
+        <span className="hover:underline cursor-pointer">Z3S S3</span>
         <span>&gt;</span>
         <span className="text-[#16191f] font-semibold">Buckets</span>
       </div>
@@ -357,7 +357,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
               placeholder="Find bucket by name"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full h-8 pl-8 pr-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#ec7211]"
+              className="w-full h-8 pl-8 pr-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb]"
             />
             <span className="absolute left-2.5 top-2 text-xs text-[#879596]">🔍</span>
           </div>
@@ -371,7 +371,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
             </button>
             <button
               onClick={() => setShowCreateModal(true)}
-              className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] active:bg-[#dd5000] text-white text-xs font-bold rounded shadow-sm transition"
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition"
             >
               Create bucket
             </button>
@@ -389,7 +389,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
               <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
                 <tr>
                   <th className="px-4 py-3 w-10">
-                    <input type="checkbox" className="rounded text-[#ec7211]" disabled />
+                    <input type="checkbox" className="rounded text-[#2563eb]" disabled />
                   </th>
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">AWS Region</th>
@@ -402,7 +402,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
                 {filteredBuckets.map(b => (
                   <tr key={b.name} className="hover:bg-[#f2f8fd] transition">
                     <td className="px-4 py-3">
-                      <input type="checkbox" className="rounded text-[#ec7211]" />
+                      <input type="checkbox" className="rounded text-[#2563eb]" />
                     </td>
                     <td className="px-4 py-3 font-semibold text-[#0073bb] hover:underline cursor-pointer" onClick={() => onSelectBucket(b.name)}>
                       <span className="mr-1.5">🪣</span>
@@ -490,7 +490,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
     <div className="space-y-4">
       {/* Breadcrumbs */}
       <div className="text-xs text-[#545b64] flex items-center space-x-1.5">
-        <span onClick={onBack} className="hover:underline cursor-pointer">Amazon S3</span>
+        <span onClick={onBack} className="hover:underline cursor-pointer">Z3S S3</span>
         <span>&gt;</span>
         <span onClick={onBack} className="hover:underline cursor-pointer">Buckets</span>
         <span>&gt;</span>
@@ -513,7 +513,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
         </div>
       </div>
 
-      {/* Navigation Tabs (AWS S3 Cloudscape style) */}
+      {/* Navigation Tabs (Z3S Cloudscape style) */}
       <div className="border-b border-[#eaeded] flex space-x-8 text-sm">
         {tabs.map(t => (
           <button
@@ -521,7 +521,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
             onClick={() => setActiveTab(t.id)}
             className={`pb-3 font-semibold transition border-b-2 ${
               activeTab === t.id 
-                ? "border-[#ec7211] text-[#ec7211]" 
+                ? "border-[#2563eb] text-[#2563eb]" 
                 : "border-transparent text-[#545b64] hover:text-[#16191f]"
             }`}
           >
@@ -689,7 +689,7 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
               placeholder="ex: my-production-data-2026"
               required
               autoFocus
-              className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#ec7211] font-mono"
+              className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb] font-mono"
             />
             <p className="text-[11px] text-[#545b64] mt-1">
               Bucket name must be globally unique and must not contain spaces or uppercase letters.
@@ -707,7 +707,7 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
             <button
               type="submit"
               disabled={loading}
-              className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] text-white text-xs font-bold rounded shadow-sm transition"
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition"
             >
               {loading ? "Creating..." : "Create bucket"}
             </button>
