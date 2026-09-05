@@ -1,5 +1,5 @@
 use quick_xml::se::to_string;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use z3s_common::S3ErrorCode;
 
 /// Resposta de erro oficial do AWS S3 em formato XML
@@ -540,3 +540,63 @@ impl ListVersionsResult {
         format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", body)
     }
 }
+
+/// Configuração de Criptografia em Repouso do Bucket (GetBucketEncryption / PutBucketEncryption)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename = "ServerSideEncryptionConfiguration")]
+pub struct ServerSideEncryptionConfiguration {
+    #[serde(rename = "@xmlns", default = "default_s3_xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Rule")]
+    pub rule: ServerSideEncryptionRule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerSideEncryptionRule {
+    #[serde(rename = "ApplyServerSideEncryptionByDefault")]
+    pub apply_server_side_encryption_by_default: ApplyServerSideEncryptionByDefault,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyServerSideEncryptionByDefault {
+    #[serde(rename = "SSEAlgorithm")]
+    pub sse_algorithm: String, // "AES256" ou "aws:kms"
+    #[serde(rename = "KMSMasterKeyID", skip_serializing_if = "Option::is_none")]
+    pub kms_master_key_id: Option<String>,
+}
+
+fn default_s3_xmlns() -> String {
+    "http://s3.amazonaws.com/doc/2006-03-01/".to_string()
+}
+
+impl ServerSideEncryptionConfiguration {
+    pub fn new_aes256() -> Self {
+        Self {
+            xmlns: default_s3_xmlns(),
+            rule: ServerSideEncryptionRule {
+                apply_server_side_encryption_by_default: ApplyServerSideEncryptionByDefault {
+                    sse_algorithm: "AES256".to_string(),
+                    kms_master_key_id: None,
+                },
+            },
+        }
+    }
+
+    pub fn new_kms(kms_key_id: Option<String>) -> Self {
+        Self {
+            xmlns: default_s3_xmlns(),
+            rule: ServerSideEncryptionRule {
+                apply_server_side_encryption_by_default: ApplyServerSideEncryptionByDefault {
+                    sse_algorithm: "aws:kms".to_string(),
+                    kms_master_key_id: kms_key_id,
+                },
+            },
+        }
+    }
+
+    pub fn to_xml(&self) -> String {
+        let body = to_string(self).unwrap();
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", body)
+    }
+}
+

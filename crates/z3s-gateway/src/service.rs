@@ -3,7 +3,8 @@ use crate::xml::{
     AccessControlPolicy, BucketItem, CommonPrefixItem, CompleteMultipartUploadResult,
     CopyObjectResult, DeleteMarkerItem, DeletedItem, DeleteResult, InitiateMultipartUploadResult,
     ListAllMyBucketsResult, ListBucketResult, ListMultipartUploadsResult, ListVersionsResult,
-    LocationConstraint, ObjectItem, S3XmlError, VersionItem, VersioningConfiguration,
+    LocationConstraint, ObjectItem, S3XmlError, ServerSideEncryptionConfiguration, VersionItem,
+    VersioningConfiguration,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -13,11 +14,53 @@ use uuid::Uuid;
 use z3s_auth::credentials::CredentialsProvider;
 use z3s_auth::sigv4::{SigV4Engine, UNSIGNED_PAYLOAD};
 use z3s_common::hash::{blake3_hash, calculate_md5_etag};
-use z3s_common::manifest::{ObjectManifest, ObjectMetadata, PartManifest, ShardPointer, StorageClass};
+use z3s_common::manifest::{
+    ObjectEncryptionMetadata, ObjectManifest, ObjectMetadata, PartManifest, ShardPointer,
+    StorageClass,
+};
 use z3s_common::types::{BucketName, ByteRange, ETag, ObjectKey, ShardId, VersionId};
 use z3s_common::S3ErrorCode;
 use z3s_erasure::ErasureEngine;
+use z3s_kms::{BucketPolicy, EncryptedDataKey, KmsEngine, PolicyEffect};
 use z3s_storage::StorageEngine;
+
+fn decode_key_32(s: &str) -> Option<[u8; 32]> {
+    if let Ok(bytes) = hex::decode(s) {
+        if bytes.len() == 32 {
+            let mut k = [0u8; 32];
+            k.copy_from_slice(&bytes);
+            return Some(k);
+        }
+    }
+    let mut clean = s.trim().to_string();
+    while clean.len() % 4 != 0 {
+        clean.push('=');
+    }
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    let mut output = Vec::new();
+    for byte in clean.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        if let Some(val) = alphabet.iter().position(|&c| c == byte) {
+            buffer = (buffer << 6) | (val as u32);
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                output.push(((buffer >> bits) & 0xFF) as u8);
+            }
+        }
+    }
+    if output.len() == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&output);
+        Some(k)
+    } else {
+        None
+    }
+}
 
 /// Resposta HTTP de alto nível gerada pelo Gateway
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,12 +92,10 @@ impl GatewayHttpResponse {
         }
     }
 
-    pub fn ok_bytes(data: Vec<u8>, content_type: &str, etag: &ETag) -> Self {
+    pub fn ok_bytes(data: Vec<u8>, content_type: &str) -> Self {
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), content_type.to_string());
         headers.insert("Content-Length".to_string(), data.len().to_string());
-        headers.insert("ETag".to_string(), etag.as_str().to_string());
-        headers.insert("Accept-Ranges".to_string(), "bytes".to_string());
         Self {
             status: 200,
             headers,
@@ -62,11 +103,10 @@ impl GatewayHttpResponse {
         }
     }
 
-    pub fn partial_content(data: Vec<u8>, start: u64, end: u64, total: u64, content_type: &str) -> Self {
+    pub fn partial_content(data: Vec<u8>, content_type: &str, start: u64, end: u64, total: u64) -> Self {
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), content_type.to_string());
         headers.insert("Content-Length".to_string(), data.len().to_string());
-        headers.insert("Accept-Ranges".to_string(), "bytes".to_string());
         headers.insert(
             "Content-Range".to_string(),
             format!("bytes {}-{}/{}", start, end, total),
@@ -126,10 +166,13 @@ pub struct S3GatewayService {
     pub storage: Arc<StorageEngine>,
     pub erasure: Arc<ErasureEngine>,
     pub credentials: Arc<dyn CredentialsProvider>,
+    pub kms: Arc<KmsEngine>,
     pub metadata_dir: Option<std::path::PathBuf>,
     buckets: RwLock<HashMap<String, BucketInfo>>,
     objects: RwLock<HashMap<String, Vec<ObjectManifest>>>,
     multiparts: RwLock<HashMap<String, ActiveMultipartUpload>>,
+    policies: RwLock<HashMap<String, BucketPolicy>>,
+    encryption_configs: RwLock<HashMap<String, ServerSideEncryptionConfiguration>>,
 }
 
 impl S3GatewayService {
@@ -151,6 +194,8 @@ impl S3GatewayService {
     ) -> Self {
         let mut buckets = HashMap::new();
         let mut objects = HashMap::new();
+        let mut policies = HashMap::new();
+        let mut encryption_configs = HashMap::new();
 
         if let Some(ref dir) = metadata_dir {
             let _ = std::fs::create_dir_all(dir);
@@ -182,6 +227,22 @@ impl S3GatewayService {
                     }
                 }
             }
+            let policies_file = dir.join("policies.json");
+            if policies_file.exists() {
+                if let Ok(data) = std::fs::read_to_string(&policies_file) {
+                    if let Ok(loaded) = serde_json::from_str::<HashMap<String, BucketPolicy>>(&data) {
+                        policies = loaded;
+                    }
+                }
+            }
+            let enc_file = dir.join("encryption.json");
+            if enc_file.exists() {
+                if let Ok(data) = std::fs::read_to_string(&enc_file) {
+                    if let Ok(loaded) = serde_json::from_str::<HashMap<String, ServerSideEncryptionConfiguration>>(&data) {
+                        encryption_configs = loaded;
+                    }
+                }
+            }
         }
 
         Self {
@@ -189,10 +250,13 @@ impl S3GatewayService {
             storage,
             erasure,
             credentials,
+            kms: Arc::new(KmsEngine::new()),
             metadata_dir,
             buckets: RwLock::new(buckets),
             objects: RwLock::new(objects),
             multiparts: RwLock::new(HashMap::new()),
+            policies: RwLock::new(policies),
+            encryption_configs: RwLock::new(encryption_configs),
         }
     }
 
@@ -212,6 +276,26 @@ impl S3GatewayService {
             if let Ok(json) = serde_json::to_string_pretty(&*map) {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(dir.join("objects.json"), json);
+            }
+        }
+    }
+
+    pub fn persist_policies(&self) {
+        if let Some(ref dir) = self.metadata_dir {
+            let map = self.policies.read().unwrap();
+            if let Ok(json) = serde_json::to_string_pretty(&*map) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("policies.json"), json);
+            }
+        }
+    }
+
+    pub fn persist_encryption(&self) {
+        if let Some(ref dir) = self.metadata_dir {
+            let map = self.encryption_configs.read().unwrap();
+            if let Ok(json) = serde_json::to_string_pretty(&*map) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("encryption.json"), json);
             }
         }
     }
@@ -299,10 +383,14 @@ impl S3GatewayService {
             S3Action::GetBucketAcl { bucket } => self.handle_get_bucket_acl(&bucket),
             S3Action::PutBucketAcl { bucket } => self.handle_put_bucket_acl(&bucket),
             S3Action::GetBucketPolicy { bucket } => self.handle_get_bucket_policy(&bucket),
+            S3Action::PutBucketPolicy { bucket } => self.handle_put_bucket_policy(&bucket, body),
+            S3Action::DeleteBucketPolicy { bucket } => self.handle_delete_bucket_policy(&bucket),
             S3Action::GetBucketCors { bucket } => self.handle_get_bucket_cors(&bucket),
             S3Action::GetBucketLifecycle { bucket } => self.handle_get_bucket_lifecycle(&bucket),
             S3Action::GetBucketTagging { bucket } => self.handle_get_bucket_tagging(&bucket),
             S3Action::GetBucketEncryption { bucket } => self.handle_get_bucket_encryption(&bucket),
+            S3Action::PutBucketEncryption { bucket } => self.handle_put_bucket_encryption(&bucket, body),
+            S3Action::DeleteBucketEncryption { bucket } => self.handle_delete_bucket_encryption(&bucket),
             S3Action::GetPublicAccessBlock { bucket } => self.handle_get_public_access_block(&bucket),
             S3Action::ListMultipartUploads { bucket } => self.handle_list_multipart_uploads(&bucket),
             S3Action::CreateBucket { bucket } => self.handle_create_bucket(&bucket),
@@ -482,11 +570,82 @@ impl S3GatewayService {
                 Some(bucket.to_string()),
             );
         }
-        GatewayHttpResponse::error(
-            S3ErrorCode::NoSuchBucketPolicy,
-            "The bucket policy does not exist",
-            Some(bucket.to_string()),
-        )
+        let map = self.policies.read().unwrap();
+        match map.get(bucket) {
+            Some(policy) => {
+                let json = serde_json::to_string_pretty(policy).unwrap_or_default();
+                let mut headers = HashMap::new();
+                headers.insert("Content-Type".to_string(), "application/json".to_string());
+                headers.insert("Content-Length".to_string(), json.len().to_string());
+                GatewayHttpResponse {
+                    status: 200,
+                    headers,
+                    body: Bytes::from(json),
+                }
+            }
+            None => GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucketPolicy,
+                "The bucket policy does not exist",
+                Some(bucket.to_string()),
+            ),
+        }
+    }
+
+    fn handle_put_bucket_policy(&self, bucket: &str, body: &[u8]) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        let policy_str = match std::str::from_utf8(body) {
+            Ok(s) => s,
+            Err(_) => {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::MalformedXML,
+                    "Payload de política não é UTF-8 válido",
+                    Some(bucket.to_string()),
+                );
+            }
+        };
+
+        let policy = match BucketPolicy::from_json(policy_str) {
+            Ok(p) => p,
+            Err(e) => {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::InvalidArgument,
+                    format!("JSON de política inválido: {}", e),
+                    Some(bucket.to_string()),
+                );
+            }
+        };
+
+        self.policies.write().unwrap().insert(bucket.to_string(), policy);
+        self.persist_policies();
+        GatewayHttpResponse::ok_empty()
+    }
+
+    fn handle_delete_bucket_policy(&self, bucket: &str) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        self.policies.write().unwrap().remove(bucket);
+        self.persist_policies();
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Length".to_string(), "0".to_string());
+        GatewayHttpResponse {
+            status: 204,
+            headers,
+            body: Bytes::new(),
+        }
     }
 
     fn handle_get_bucket_cors(&self, bucket: &str) -> GatewayHttpResponse {
@@ -542,11 +701,62 @@ impl S3GatewayService {
                 Some(bucket.to_string()),
             );
         }
-        GatewayHttpResponse::error(
-            S3ErrorCode::ServerSideEncryptionConfigurationNotFoundError,
-            "The server side encryption configuration was not found",
-            Some(bucket.to_string()),
-        )
+
+        let map = self.encryption_configs.read().unwrap();
+        match map.get(bucket) {
+            Some(config) => GatewayHttpResponse::ok_xml(config.to_xml()),
+            None => GatewayHttpResponse::error(
+                S3ErrorCode::ServerSideEncryptionConfigurationNotFoundError,
+                "The server side encryption configuration was not found",
+                Some(bucket.to_string()),
+            ),
+        }
+    }
+
+    fn handle_put_bucket_encryption(&self, bucket: &str, body: &[u8]) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        let config = if body.is_empty() {
+            ServerSideEncryptionConfiguration::new_aes256()
+        } else {
+            let body_str = String::from_utf8_lossy(body);
+            if body_str.contains("aws:kms") {
+                ServerSideEncryptionConfiguration::new_kms(None)
+            } else {
+                ServerSideEncryptionConfiguration::new_aes256()
+            }
+        };
+
+        self.encryption_configs.write().unwrap().insert(bucket.to_string(), config);
+        self.persist_encryption();
+        GatewayHttpResponse::ok_empty()
+    }
+
+    fn handle_delete_bucket_encryption(&self, bucket: &str) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        self.encryption_configs.write().unwrap().remove(bucket);
+        self.persist_encryption();
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Length".to_string(), "0".to_string());
+        GatewayHttpResponse {
+            status: 204,
+            headers,
+            body: Bytes::new(),
+        }
     }
 
     fn handle_get_public_access_block(&self, bucket: &str) -> GatewayHttpResponse {
@@ -685,7 +895,149 @@ impl S3GatewayService {
             }
         };
 
-        let encoded = match self.erasure.encode(body) {
+        // 1. Avaliação de Bucket Policy
+        let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
+        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
+            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:PutObject", &resource_arn) {
+                if effect == PolicyEffect::Deny {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::AccessDenied,
+                        "Acesso negado pela política do bucket (Bucket Policy)",
+                        Some(resource_arn),
+                    );
+                }
+            }
+        }
+
+        // 2. Determina Criptografia em Repouso (SSE-S3 / SSE-KMS / SSE-C)
+        let sse_header = headers.get("x-amz-server-side-encryption").map(|s| s.as_str());
+        let sse_kms_key_id = headers.get("x-amz-server-side-encryption-aws-kms-key-id").cloned();
+        let sse_c_key = headers.get("x-amz-server-side-encryption-customer-key");
+        let default_encryption = self.encryption_configs.read().unwrap().get(bucket).cloned();
+
+        let (payload_to_store, encryption_meta, response_sse_headers) = if let Some(key_raw) = sse_c_key {
+            // SSE-C (Customer Key)
+            let key_bytes = match decode_key_32(key_raw) {
+                Some(k) => k,
+                None => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InvalidArgument,
+                        "Chave SSE-C do cliente deve conter 32 bytes (256 bits)",
+                        Some(key.to_string()),
+                    );
+                }
+            };
+
+            let (ciphertext, iv) = match KmsEngine::encrypt_payload(&key_bytes, body) {
+                Ok(res) => res,
+                Err(e) => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InternalError,
+                        format!("Erro ao criptografar SSE-C: {}", e),
+                        None,
+                    );
+                }
+            };
+
+            let key_md5 = calculate_md5_etag(&key_bytes);
+            let mut sse_resp = HashMap::new();
+            sse_resp.insert("x-amz-server-side-encryption-customer-algorithm".to_string(), "AES256".to_string());
+            sse_resp.insert("x-amz-server-side-encryption-customer-key-MD5".to_string(), key_md5.clone());
+
+            let meta = ObjectEncryptionMetadata {
+                algorithm: "SSE-C".to_string(),
+                kms_key_id: None,
+                encrypted_dek_hex: None,
+                dek_iv_hex: None,
+                payload_iv_hex: Some(hex::encode(iv)),
+                key_md5: Some(key_md5),
+            };
+
+            (ciphertext, Some(meta), sse_resp)
+        } else if sse_header == Some("aws:kms") || (sse_header.is_none() && default_encryption.as_ref().map_or(false, |d| d.rule.apply_server_side_encryption_by_default.sse_algorithm == "aws:kms")) {
+            // SSE-KMS
+            let key_id = sse_kms_key_id
+                .or_else(|| default_encryption.and_then(|d| d.rule.apply_server_side_encryption_by_default.kms_master_key_id))
+                .unwrap_or_else(|| "default".to_string());
+
+            let (raw_dek, encrypted_dek) = match self.kms.generate_data_key(&key_id) {
+                Ok(res) => res,
+                Err(e) => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InternalError,
+                        format!("Erro KMS ao gerar DEK: {}", e),
+                        None,
+                    );
+                }
+            };
+
+            let (ciphertext, iv) = match KmsEngine::encrypt_payload(&raw_dek, body) {
+                Ok(res) => res,
+                Err(e) => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InternalError,
+                        format!("Erro ao criptografar payload: {}", e),
+                        None,
+                    );
+                }
+            };
+
+            let mut sse_resp = HashMap::new();
+            sse_resp.insert("x-amz-server-side-encryption".to_string(), "aws:kms".to_string());
+            sse_resp.insert("x-amz-server-side-encryption-aws-kms-key-id".to_string(), key_id.clone());
+
+            let meta = ObjectEncryptionMetadata {
+                algorithm: "aws:kms".to_string(),
+                kms_key_id: Some(key_id),
+                encrypted_dek_hex: Some(encrypted_dek.encrypted_dek_hex),
+                dek_iv_hex: Some(encrypted_dek.iv_hex),
+                payload_iv_hex: Some(hex::encode(iv)),
+                key_md5: None,
+            };
+
+            (ciphertext, Some(meta), sse_resp)
+        } else if sse_header == Some("AES256") || default_encryption.is_some() {
+            // SSE-S3 (AES256 gerenciado pelo Z3S)
+            let (raw_dek, encrypted_dek) = match self.kms.generate_data_key("aws/s3") {
+                Ok(res) => res,
+                Err(e) => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InternalError,
+                        format!("Erro KMS ao gerar DEK: {}", e),
+                        None,
+                    );
+                }
+            };
+
+            let (ciphertext, iv) = match KmsEngine::encrypt_payload(&raw_dek, body) {
+                Ok(res) => res,
+                Err(e) => {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::InternalError,
+                        format!("Erro ao criptografar payload: {}", e),
+                        None,
+                    );
+                }
+            };
+
+            let mut sse_resp = HashMap::new();
+            sse_resp.insert("x-amz-server-side-encryption".to_string(), "AES256".to_string());
+
+            let meta = ObjectEncryptionMetadata {
+                algorithm: "AES256".to_string(),
+                kms_key_id: Some("aws/s3".to_string()),
+                encrypted_dek_hex: Some(encrypted_dek.encrypted_dek_hex),
+                dek_iv_hex: Some(encrypted_dek.iv_hex),
+                payload_iv_hex: Some(hex::encode(iv)),
+                key_md5: None,
+            };
+
+            (ciphertext, Some(meta), sse_resp)
+        } else {
+            (body.to_vec(), None, HashMap::new())
+        };
+
+        let encoded = match self.erasure.encode(&payload_to_store) {
             Ok(enc) => enc,
             Err(e) => {
                 return GatewayHttpResponse::error(
@@ -763,6 +1115,7 @@ impl S3GatewayService {
             merkle_root: blake3_hash(body),
             is_delete_marker: false,
             is_latest: true,
+            encryption: encryption_meta,
         };
 
         let manifest = ObjectManifest::new(
@@ -805,6 +1158,7 @@ impl S3GatewayService {
         if versioning_status == BucketVersioningStatus::Enabled || version_id_str != "null" {
             resp_headers.insert("x-amz-version-id".to_string(), version_id_str);
         }
+        resp_headers.extend(response_sse_headers);
         GatewayHttpResponse {
             status: 200,
             headers: resp_headers,
@@ -878,9 +1232,10 @@ impl S3GatewayService {
             }
         }
 
-        let payload = match self
+        let extra_tag_len = if src_manifest.metadata.encryption.is_some() { 16 } else { 0 };
+        let mut raw_payload = match self
             .erasure
-            .reconstruct(&mut shards_options, src_manifest.metadata.size as usize)
+            .reconstruct(&mut shards_options, src_manifest.metadata.size as usize + extra_tag_len)
         {
             Ok(p) => p,
             Err(e) => {
@@ -891,6 +1246,40 @@ impl S3GatewayService {
                 )
             }
         };
+
+        if let Some(ref enc) = src_manifest.metadata.encryption {
+            if enc.algorithm == "AES256" || enc.algorithm == "aws:kms" {
+                let key_id = enc.kms_key_id.as_deref().unwrap_or("aws/s3");
+                let encrypted_dek = EncryptedDataKey {
+                    key_id: key_id.to_string(),
+                    encrypted_dek_hex: enc.encrypted_dek_hex.clone().unwrap_or_default(),
+                    iv_hex: enc.dek_iv_hex.clone().unwrap_or_default(),
+                };
+
+                let raw_dek = match self.kms.decrypt_data_key(&encrypted_dek) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::InternalError,
+                            format!("Erro KMS ao decriptografar origem de cópia: {}", e),
+                            None,
+                        );
+                    }
+                };
+
+                let mut iv = [0u8; 12];
+                if let Ok(iv_bytes) = hex::decode(enc.payload_iv_hex.as_deref().unwrap_or_default()) {
+                    if iv_bytes.len() == 12 {
+                        iv.copy_from_slice(&iv_bytes);
+                    }
+                }
+
+                if let Ok(plaintext) = KmsEngine::decrypt_payload(&raw_dek, &raw_payload, &iv) {
+                    raw_payload = plaintext;
+                }
+            }
+        }
+        let payload = raw_payload;
 
         // Mescla metadados de origem com novos metadados se fornecidos
         let mut final_headers = headers.clone();
@@ -918,6 +1307,20 @@ impl S3GatewayService {
         range: Option<ByteRange>,
         headers: &HashMap<String, String>,
     ) -> GatewayHttpResponse {
+        // Avaliação de Bucket Policy
+        let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
+        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
+            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:GetObject", &resource_arn) {
+                if effect == PolicyEffect::Deny {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::AccessDenied,
+                        "Acesso negado pela política do bucket (Bucket Policy)",
+                        Some(resource_arn),
+                    );
+                }
+            }
+        }
+
         let manifest_key = format!("{}/{}", bucket, key);
         let manifest = {
             let map = self.objects.read().unwrap();
@@ -997,8 +1400,10 @@ impl S3GatewayService {
             }
         }
 
-        let full_payload = if !manifest.parts.is_empty() {
-            let mut payload = Vec::with_capacity(manifest.metadata.size as usize);
+        let extra_tag_len = if manifest.metadata.encryption.is_some() { 16 } else { 0 };
+
+        let mut full_payload = if !manifest.parts.is_empty() {
+            let mut payload = Vec::with_capacity(manifest.metadata.size as usize + extra_tag_len);
             for part in &manifest.parts {
                 let mut shards_options: Vec<Option<Vec<u8>>> = Vec::new();
                 for shard in &part.shards {
@@ -1027,7 +1432,7 @@ impl S3GatewayService {
                     Err(_) => shards_options.push(None),
                 }
             }
-            match self.erasure.reconstruct(&mut shards_options, manifest.metadata.size as usize) {
+            match self.erasure.reconstruct(&mut shards_options, manifest.metadata.size as usize + extra_tag_len) {
                 Ok(payload) => payload,
                 Err(e) => {
                     return GatewayHttpResponse::error(
@@ -1038,6 +1443,97 @@ impl S3GatewayService {
                 }
             }
         };
+
+        // Decriptografia em Repouso se aplicável
+        let mut sse_resp_headers = HashMap::new();
+        if let Some(ref enc) = manifest.metadata.encryption {
+            if enc.algorithm == "AES256" || enc.algorithm == "aws:kms" {
+                let key_id = enc.kms_key_id.as_deref().unwrap_or("aws/s3");
+                let encrypted_dek = EncryptedDataKey {
+                    key_id: key_id.to_string(),
+                    encrypted_dek_hex: enc.encrypted_dek_hex.clone().unwrap_or_default(),
+                    iv_hex: enc.dek_iv_hex.clone().unwrap_or_default(),
+                };
+
+                let raw_dek = match self.kms.decrypt_data_key(&encrypted_dek) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::InternalError,
+                            format!("Erro KMS ao decriptografar chave DEK: {}", e),
+                            None,
+                        );
+                    }
+                };
+
+                let mut iv = [0u8; 12];
+                if let Ok(iv_bytes) = hex::decode(enc.payload_iv_hex.as_deref().unwrap_or_default()) {
+                    if iv_bytes.len() == 12 {
+                        iv.copy_from_slice(&iv_bytes);
+                    }
+                }
+
+                let plaintext = match KmsEngine::decrypt_payload(&raw_dek, &full_payload, &iv) {
+                    Ok(pt) => pt,
+                    Err(e) => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::InternalError,
+                            format!("Erro ao decriptografar payload SSE: {}", e),
+                            None,
+                        );
+                    }
+                };
+
+                full_payload = plaintext;
+                sse_resp_headers.insert("x-amz-server-side-encryption".to_string(), enc.algorithm.clone());
+                if enc.algorithm == "aws:kms" {
+                    sse_resp_headers.insert("x-amz-server-side-encryption-aws-kms-key-id".to_string(), key_id.to_string());
+                }
+            } else if enc.algorithm == "SSE-C" {
+                let cust_key_raw = match headers.get("x-amz-server-side-encryption-customer-key") {
+                    Some(k) => k,
+                    None => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::AccessDenied,
+                            "Acesso negado: o objeto foi criptografado com SSE-C e a chave de decriptografia não foi fornecida",
+                            Some(key.to_string()),
+                        );
+                    }
+                };
+
+                let key_bytes = match decode_key_32(cust_key_raw) {
+                    Some(k) => k,
+                    None => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::InvalidArgument,
+                            "Chave SSE-C do cliente inválida",
+                            Some(key.to_string()),
+                        );
+                    }
+                };
+
+                let mut iv = [0u8; 12];
+                if let Ok(iv_bytes) = hex::decode(enc.payload_iv_hex.as_deref().unwrap_or_default()) {
+                    if iv_bytes.len() == 12 {
+                        iv.copy_from_slice(&iv_bytes);
+                    }
+                }
+
+                let plaintext = match KmsEngine::decrypt_payload(&key_bytes, &full_payload, &iv) {
+                    Ok(pt) => pt,
+                    Err(e) => {
+                        return GatewayHttpResponse::error(
+                            S3ErrorCode::AccessDenied,
+                            format!("Falha na decriptografia SSE-C com a chave fornecida: {}", e),
+                            None,
+                        );
+                    }
+                };
+
+                full_payload = plaintext;
+                sse_resp_headers.insert("x-amz-server-side-encryption-customer-algorithm".to_string(), "AES256".to_string());
+            }
+        }
 
         let mut resp = if let Some(r) = range {
             let total = full_payload.len() as u64;
@@ -1055,22 +1551,22 @@ impl S3GatewayService {
             let slice = full_payload[start as usize..=end as usize].to_vec();
             GatewayHttpResponse::partial_content(
                 slice,
+                &manifest.metadata.content_type,
                 start,
                 end,
                 total,
-                &manifest.metadata.content_type,
             )
         } else {
             GatewayHttpResponse::ok_bytes(
                 full_payload,
                 &manifest.metadata.content_type,
-                &manifest.metadata.etag,
             )
         };
 
         for (k, v) in &manifest.metadata.user_metadata {
             resp.headers.insert(k.clone(), v.clone());
         }
+        resp.headers.insert("ETag".to_string(), manifest.metadata.etag.as_str().to_string());
         resp.headers.insert(
             "Last-Modified".to_string(),
             manifest.metadata.created_at.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
@@ -1081,6 +1577,7 @@ impl S3GatewayService {
                 manifest.metadata.version_id.as_str().to_string(),
             );
         }
+        resp.headers.extend(sse_resp_headers);
 
         resp
     }
@@ -1112,6 +1609,20 @@ impl S3GatewayService {
     }
 
     fn handle_head_object(&self, bucket: &str, key: &str, version_id: Option<&str>) -> GatewayHttpResponse {
+        // Avaliação de Bucket Policy
+        let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
+        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
+            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:GetObject", &resource_arn) {
+                if effect == PolicyEffect::Deny {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::AccessDenied,
+                        "Acesso negado pela política do bucket (Bucket Policy)",
+                        Some(resource_arn),
+                    );
+                }
+            }
+        }
+
         let manifest_key = format!("{}/{}", bucket, key);
         let manifest = {
             let map = self.objects.read().unwrap();
@@ -1180,6 +1691,20 @@ impl S3GatewayService {
             );
         }
 
+        if let Some(ref enc) = manifest.metadata.encryption {
+            headers.insert("x-amz-server-side-encryption".to_string(), enc.algorithm.clone());
+            if enc.algorithm == "aws:kms" {
+                if let Some(ref kid) = enc.kms_key_id {
+                    headers.insert("x-amz-server-side-encryption-aws-kms-key-id".to_string(), kid.clone());
+                }
+            } else if enc.algorithm == "SSE-C" {
+                headers.insert("x-amz-server-side-encryption-customer-algorithm".to_string(), "AES256".to_string());
+                if let Some(ref md5) = enc.key_md5 {
+                    headers.insert("x-amz-server-side-encryption-customer-key-MD5".to_string(), md5.clone());
+                }
+            }
+        }
+
         for (k, v) in &manifest.metadata.user_metadata {
             headers.insert(k.clone(), v.clone());
         }
@@ -1192,6 +1717,19 @@ impl S3GatewayService {
     }
 
     fn handle_delete_object(&self, bucket: &str, key: &str, version_id: Option<&str>) -> GatewayHttpResponse {
+        // Avaliação de Bucket Policy
+        let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
+        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
+            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:DeleteObject", &resource_arn) {
+                if effect == PolicyEffect::Deny {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::AccessDenied,
+                        "Acesso negado pela política do bucket (Bucket Policy)",
+                        Some(resource_arn),
+                    );
+                }
+            }
+        }
         let versioning_status = {
             let buckets = self.buckets.read().unwrap();
             match buckets.get(bucket) {
@@ -1885,6 +2423,7 @@ impl S3GatewayService {
             merkle_root: [0u8; 32],
             is_delete_marker: false,
             is_latest: true,
+            encryption: None,
         };
 
         let manifest = ObjectManifest::new_with_parts(
@@ -2247,5 +2786,114 @@ mod tests {
         // 17. Bucket vazio pode ser deletado
         let del_bucket = service.handle_request("DELETE", "/versioned-bucket", None, &headers, &[]);
         assert_eq!(del_bucket.status, 204);
+    }
+
+    #[test]
+    fn test_phase5_security_kms_sse_and_bucket_policies() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(StorageEngine::open(temp_dir.path(), 10 * 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+
+        let service = S3GatewayService::new(
+            Uuid::new_v4(),
+            storage,
+            erasure,
+            credentials,
+        );
+        let headers = HashMap::new();
+
+        // 1. Cria bucket
+        let create_resp = service.handle_request("PUT", "/secure-bucket", None, &headers, &[]);
+        assert_eq!(create_resp.status, 200);
+
+        // 2. Aplica Bucket Policy que bloqueia acesso à pasta "secret/*"
+        let policy_json = br#"{
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "DenySecretFolder",
+                    "Effect": "Deny",
+                    "Principal": "*",
+                    "Action": "s3:*",
+                    "Resource": "arn:aws:s3:::secure-bucket/secret/*"
+                }
+            ]
+        }"#;
+        let put_pol = service.handle_request("PUT", "/secure-bucket", Some("policy"), &headers, policy_json);
+        assert_eq!(put_pol.status, 200);
+
+        // 3. Testa permissão da Policy: arquivo normal OK, arquivo secret/ NEGADO (403)
+        let payload_public = b"Dados publicos normais";
+        let put_pub = service.handle_request("PUT", "/secure-bucket/public/info.txt", None, &headers, payload_public);
+        assert_eq!(put_pub.status, 200);
+
+        let put_sec = service.handle_request("PUT", "/secure-bucket/secret/keys.txt", None, &headers, b"senhas");
+        assert_eq!(put_sec.status, 403);
+
+        // 4. Teste SSE-S3 (AES256)
+        let mut sse_s3_headers = HashMap::new();
+        sse_s3_headers.insert("x-amz-server-side-encryption".to_string(), "AES256".to_string());
+        let payload_s3 = b"Conteudo confidencial protegido com SSE-S3 AES-256-GCM";
+        let put_sse_s3 = service.handle_request("PUT", "/secure-bucket/sse-s3.txt", None, &sse_s3_headers, payload_s3);
+        assert_eq!(put_sse_s3.status, 200);
+        assert_eq!(put_sse_s3.headers.get("x-amz-server-side-encryption").map(|s| s.as_str()), Some("AES256"));
+
+        // HEAD valida cabeçalho SSE-S3
+        let head_s3 = service.handle_request("HEAD", "/secure-bucket/sse-s3.txt", None, &headers, &[]);
+        assert_eq!(head_s3.status, 200);
+        assert_eq!(head_s3.headers.get("x-amz-server-side-encryption").map(|s| s.as_str()), Some("AES256"));
+
+        // GET decriptografa de forma transparente
+        let get_s3 = service.handle_request("GET", "/secure-bucket/sse-s3.txt", None, &headers, &[]);
+        assert_eq!(get_s3.status, 200);
+        assert_eq!(get_s3.body.as_ref(), payload_s3);
+
+        // Leitura por Byte-Range em arquivo criptografado
+        let mut range_headers = HashMap::new();
+        range_headers.insert("Range".to_string(), "bytes=0-7".to_string());
+        let get_range = service.handle_request("GET", "/secure-bucket/sse-s3.txt", None, &range_headers, &[]);
+        assert_eq!(get_range.status, 206);
+        assert_eq!(get_range.body.as_ref(), b"Conteudo");
+
+        // 5. Teste SSE-KMS
+        let mut kms_headers = HashMap::new();
+        kms_headers.insert("x-amz-server-side-encryption".to_string(), "aws:kms".to_string());
+        kms_headers.insert("x-amz-server-side-encryption-aws-kms-key-id".to_string(), "minha-chave-custom".to_string());
+        let payload_kms = b"Documento protegido com SSE-KMS e Envelope Encryption";
+        let put_kms = service.handle_request("PUT", "/secure-bucket/sse-kms.txt", None, &kms_headers, payload_kms);
+        assert_eq!(put_kms.status, 200);
+        assert_eq!(put_kms.headers.get("x-amz-server-side-encryption").map(|s| s.as_str()), Some("aws:kms"));
+
+        let get_kms = service.handle_request("GET", "/secure-bucket/sse-kms.txt", None, &headers, &[]);
+        assert_eq!(get_kms.status, 200);
+        assert_eq!(get_kms.body.as_ref(), payload_kms);
+
+        // 6. Teste SSE-C (Chave fornecida pelo Cliente)
+        let customer_key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"; // 32 bytes hex
+        let mut sse_c_headers = HashMap::new();
+        sse_c_headers.insert("x-amz-server-side-encryption-customer-key".to_string(), customer_key_hex.to_string());
+        let payload_c = b"Dado ultra seguro SSE-C com chave do cliente";
+        let put_c = service.handle_request("PUT", "/secure-bucket/sse-c.txt", None, &sse_c_headers, payload_c);
+        assert_eq!(put_c.status, 200);
+
+        // GET sem a chave do cliente -> Rejeita com 403 AccessDenied
+        let get_c_no_key = service.handle_request("GET", "/secure-bucket/sse-c.txt", None, &headers, &[]);
+        assert_eq!(get_c_no_key.status, 403);
+
+        // GET com a chave do cliente -> Decriptografa com sucesso
+        let get_c_ok = service.handle_request("GET", "/secure-bucket/sse-c.txt", None, &sse_c_headers, &[]);
+        assert_eq!(get_c_ok.status, 200);
+        assert_eq!(get_c_ok.body.as_ref(), payload_c);
+
+        // 7. Bucket Default Encryption
+        let enc_xml = b"<ServerSideEncryptionConfiguration><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>";
+        let put_enc = service.handle_request("PUT", "/secure-bucket", Some("encryption"), &headers, enc_xml);
+        assert_eq!(put_enc.status, 200);
+
+        // Upload sem cabeçalhos de criptografia -> é criptografado automaticamente pela regra do bucket
+        let put_auto = service.handle_request("PUT", "/secure-bucket/auto-enc.txt", None, &headers, b"Texto criptografado por padrao");
+        assert_eq!(put_auto.status, 200);
+        assert_eq!(put_auto.headers.get("x-amz-server-side-encryption").map(|s| s.as_str()), Some("AES256"));
     }
 }

@@ -23,6 +23,22 @@ fn default_true() -> bool {
     true
 }
 
+/// Metadados de criptografia em repouso (SSE-S3 / SSE-KMS / SSE-C)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectEncryptionMetadata {
+    pub algorithm: String, // "AES256" | "aws:kms" | "SSE-C"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kms_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_dek_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dek_iv_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_iv_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_md5: Option<String>,
+}
+
 /// Metadados imutáveis do Objeto
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectMetadata {
@@ -40,6 +56,8 @@ pub struct ObjectMetadata {
     pub is_delete_marker: bool,
     #[serde(default = "default_true")]
     pub is_latest: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<ObjectEncryptionMetadata>,
 }
 
 impl ObjectMetadata {
@@ -57,6 +75,7 @@ impl ObjectMetadata {
             merkle_root: [0u8; 32],
             is_delete_marker: true,
             is_latest: true,
+            encryption: None,
         }
     }
 }

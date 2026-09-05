@@ -7,6 +7,14 @@ license.workspace = true
 
 [dependencies]
 z3s-common.workspace = true
-aes-gcm.workspace = true
+aes-gcm = { workspace = true, features = ["getrandom"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

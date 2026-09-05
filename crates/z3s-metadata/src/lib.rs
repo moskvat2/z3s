@@ -38,6 +38,7 @@ mod tests {
                 merkle_root: [0u8; 32],
                 is_delete_marker: false,
                 is_latest: true,
+                encryption: None,
             },
             data_shards_count: 4,
             parity_shards_count: 2,

@@ -13,10 +13,14 @@ pub enum S3Action {
     GetBucketAcl { bucket: String },
     PutBucketAcl { bucket: String },
     GetBucketPolicy { bucket: String },
+    PutBucketPolicy { bucket: String },
+    DeleteBucketPolicy { bucket: String },
     GetBucketCors { bucket: String },
     GetBucketLifecycle { bucket: String },
     GetBucketTagging { bucket: String },
     GetBucketEncryption { bucket: String },
+    PutBucketEncryption { bucket: String },
+    DeleteBucketEncryption { bucket: String },
     GetPublicAccessBlock { bucket: String },
     ListMultipartUploads { bucket: String },
     ListObjectsV2 { bucket: String, prefix: String, delimiter: Option<String>, max_keys: usize },
@@ -84,13 +88,36 @@ impl S3Router {
                         bucket,
                     });
                 }
+                if query.map_or(false, |q| Self::has_query_flag(q, "encryption")) {
+                    return Some(S3Action::PutBucketEncryption {
+                        bucket,
+                    });
+                }
+                if query.map_or(false, |q| Self::has_query_flag(q, "policy")) {
+                    return Some(S3Action::PutBucketPolicy {
+                        bucket,
+                    });
+                }
                 Some(S3Action::CreateBucket {
                     bucket,
                 })
             }
-            ("DELETE", [bucket]) => Some(S3Action::DeleteBucket {
-                bucket: Self::url_decode(bucket),
-            }),
+            ("DELETE", [bucket]) => {
+                let bucket = Self::url_decode(bucket);
+                if query.map_or(false, |q| Self::has_query_flag(q, "encryption")) {
+                    return Some(S3Action::DeleteBucketEncryption {
+                        bucket,
+                    });
+                }
+                if query.map_or(false, |q| Self::has_query_flag(q, "policy")) {
+                    return Some(S3Action::DeleteBucketPolicy {
+                        bucket,
+                    });
+                }
+                Some(S3Action::DeleteBucket {
+                    bucket,
+                })
+            }
             ("POST", [bucket]) => {
                 let bucket = Self::url_decode(bucket);
                 if query.map_or(false, |q| Self::has_query_flag(q, "delete")) {
@@ -306,7 +333,7 @@ impl S3Router {
                     }
                 }
 
-                let range = headers.get("range").and_then(|h| Self::parse_byte_range(h));
+                let range = headers.get("range").or_else(|| headers.get("Range")).and_then(|h| Self::parse_byte_range(h));
                 Some(S3Action::GetObject {
                     bucket,
                     key,
