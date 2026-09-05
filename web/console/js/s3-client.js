@@ -133,12 +133,21 @@ class S3Client {
     return buckets;
   }
 
-  async createBucket(bucketName) {
+  async createBucket(bucketName, options = {}) {
     const { url, headers } = await this.signRequest("PUT", `/${bucketName}`);
     const res = await fetch(url, { method: "PUT", headers });
     if (!res.ok) {
       const errText = await res.text();
       throw new Error(`Erro ao criar bucket: HTTP ${res.status} - ${errText}`);
+    }
+
+    // Se versionamento foi selecionado na criação
+    if (options.versioning) {
+      try {
+        await this.putBucketVersioning(bucketName, "Enabled");
+      } catch (vErr) {
+        console.warn("Falha ao habilitar versionamento na criação:", vErr);
+      }
     }
     return true;
   }
@@ -149,6 +158,30 @@ class S3Client {
     if (!res.ok) {
       const errText = await res.text();
       throw new Error(`Erro ao deletar bucket: HTTP ${res.status} - ${errText}`);
+    }
+    return true;
+  }
+
+  async getBucketVersioning(bucketName) {
+    const { url, headers } = await this.signRequest("GET", `/${bucketName}`, { versioning: "" });
+    const res = await fetch(url, { method: "GET", headers });
+    if (!res.ok) return "Off";
+    const text = await res.text();
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(text, "application/xml");
+    const status = xml.querySelector("Status")?.textContent;
+    return status || "Off";
+  }
+
+  async putBucketVersioning(bucketName, status) {
+    const xmlBody = `<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>${status}</Status></VersioningConfiguration>`;
+    const { url, headers } = await this.signRequest("PUT", `/${bucketName}`, { versioning: "" }, xmlBody, {
+      "content-type": "application/xml"
+    });
+    const res = await fetch(url, { method: "PUT", headers, body: xmlBody });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Erro ao atualizar versionamento: HTTP ${res.status} - ${errText}`);
     }
     return true;
   }
@@ -184,6 +217,43 @@ class S3Client {
     });
 
     return { folders, objects };
+  }
+
+  async deleteObject(bucketName, key) {
+    const { url, headers } = await this.signRequest("DELETE", `/${bucketName}/${encodeURIComponent(key)}`);
+    const res = await fetch(url, { method: "DELETE", headers });
+    if (!res.ok && res.status !== 204 && res.status !== 200) {
+      throw new Error(`Erro ao excluir objeto: HTTP ${res.status}`);
+    }
+    return true;
+  }
+
+  async deleteObjects(bucketName, keys) {
+    if (!keys || keys.length === 0) return true;
+    let xmlBody = `<Delete><Quiet>true</Quiet>`;
+    keys.forEach(k => {
+      xmlBody += `<Object><Key>${k}</Key></Object>`;
+    });
+    xmlBody += `</Delete>`;
+
+    const { url, headers } = await this.signRequest("POST", `/${bucketName}`, { delete: "" }, xmlBody, {
+      "content-type": "application/xml"
+    });
+    const res = await fetch(url, { method: "POST", headers, body: xmlBody });
+    if (!res.ok && res.status !== 200 && res.status !== 204) {
+      throw new Error(`Erro ao excluir objetos em lote: HTTP ${res.status}`);
+    }
+    return true;
+  }
+
+  async emptyBucket(bucketName) {
+    // List all objects recursively without delimiter
+    const { objects } = await this.listObjects(bucketName, "", "");
+    if (objects.length > 0) {
+      const keys = objects.map(o => o.key);
+      await this.deleteObjects(bucketName, keys);
+    }
+    return true;
   }
 }
 

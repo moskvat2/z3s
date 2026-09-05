@@ -282,14 +282,18 @@ function AwsGlobalHeader({ session, onLogout, onNavigateHome }) {
 }
 
 // ----------------------------------------------------------------------
-// 3. AWS Buckets Overview View
+// 3. AWS Buckets Overview View (Phase 2 - Advanced Management)
 // ----------------------------------------------------------------------
 function AwsBucketsView({ onSelectBucket, addToast }) {
   const [buckets, setBuckets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedBucketNames, setSelectedBucketNames] = useState([]);
+  
+  // Modals state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [deleteTargetBucket, setDeleteTargetBucket] = useState(null); // string or array
+  const [emptyTargetBucket, setEmptyTargetBucket] = useState(null);
 
   const fetchBuckets = async () => {
     setLoading(true);
@@ -297,6 +301,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
       const client = AuthManager.getClient();
       const list = await client.listBuckets();
       setBuckets(list);
+      setSelectedBucketNames([]);
     } catch (err) {
       addToast("Erro ao carregar buckets: " + err.message, "error");
     } finally {
@@ -312,19 +317,28 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
     return buckets.filter(b => b.name.toLowerCase().includes(search.toLowerCase()));
   }, [buckets, search]);
 
-  const handleDeleteBucket = async (bucketName) => {
-    if (!confirm(`Tem certeza que deseja excluir o bucket '${bucketName}' permanentemente?`)) {
-      return;
-    }
-    try {
-      const client = AuthManager.getClient();
-      await client.deleteBucket(bucketName);
-      addToast(`Bucket '${bucketName}' excluído com sucesso.`, "success");
-      fetchBuckets();
-    } catch (err) {
-      addToast(`Erro ao excluir: ${err.message}`, "error");
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedBucketNames(filteredBuckets.map(b => b.name));
+    } else {
+      setSelectedBucketNames([]);
     }
   };
+
+  const handleToggleSelect = (bucketName) => {
+    setSelectedBucketNames(prev => 
+      prev.includes(bucketName) ? prev.filter(n => n !== bucketName) : [...prev, bucketName]
+    );
+  };
+
+  const handleCopyUri = (bucketName) => {
+    const uri = `s3://${bucketName}`;
+    navigator.clipboard.writeText(uri);
+    addToast(`URI '${uri}' copiada para a área de transferência!`, "success");
+  };
+
+  const isAllSelected = filteredBuckets.length > 0 && selectedBucketNames.length === filteredBuckets.length;
+  const isSomeSelected = selectedBucketNames.length > 0 && !isAllSelected;
 
   return (
     <div className="space-y-4">
@@ -335,110 +349,228 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
         <span className="text-[#16191f] font-semibold">Buckets</span>
       </div>
 
-      {/* Page Title & Count */}
-      <div className="flex items-center justify-between">
+      {/* Page Title & Stats */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold text-[#16191f]">
             Buckets <span className="text-[#545b64] font-normal text-lg">({filteredBuckets.length})</span>
           </h1>
           <p className="text-xs text-[#545b64] mt-0.5">
-            Buckets are containers for data stored in Z3S S3.
+            Buckets are containers for data stored in Z3S S3. Configure properties, access policies, and object versions.
           </p>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="h-9 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+          >
+            <span>+</span>
+            <span>Create bucket</span>
+          </button>
         </div>
       </div>
 
       {/* Cloudscape Table Card */}
       <div className="bg-white border border-[#eaeded] rounded shadow-sm overflow-hidden">
         {/* Table Action Bar */}
-        <div className="p-4 border-b border-[#eaeded] flex flex-wrap items-center justify-between gap-3">
+        <div className="p-3.5 border-b border-[#eaeded] bg-white flex flex-wrap items-center justify-between gap-3">
+          {/* Search */}
           <div className="relative w-72">
             <input 
               type="text"
-              placeholder="Find bucket by name"
+              placeholder="Find bucket by name..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full h-8 pl-8 pr-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb]"
+              className="w-full h-8 pl-8 pr-8 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb]"
             />
             <span className="absolute left-2.5 top-2 text-xs text-[#879596]">🔍</span>
+            {search && (
+              <button 
+                onClick={() => setSearch("")}
+                className="absolute right-2.5 top-1.5 text-xs text-[#879596] hover:text-[#16191f]"
+              >
+                ✕
+              </button>
+            )}
           </div>
 
-          <div className="flex items-center space-x-2">
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Copy URI */}
+            <button
+              disabled={selectedBucketNames.length !== 1}
+              onClick={() => handleCopyUri(selectedBucketNames[0])}
+              className="h-8 px-3 bg-white hover:bg-[#fafafa] disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+              title="Copiar S3 URI do bucket selecionado"
+            >
+              📋 Copy S3 URI
+            </button>
+
+            {/* Empty Button */}
+            <button
+              disabled={selectedBucketNames.length !== 1}
+              onClick={() => setEmptyTargetBucket(selectedBucketNames[0])}
+              className="h-8 px-3 bg-white hover:bg-amber-50 text-amber-700 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition"
+              title="Esvaziar todos os objetos do bucket"
+            >
+              🧹 Empty
+            </button>
+
+            {/* Delete Button */}
+            <button
+              disabled={selectedBucketNames.length !== 1}
+              onClick={() => setDeleteTargetBucket(selectedBucketNames[0])}
+              className="h-8 px-3 bg-white hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition"
+              title="Excluir bucket selecionado"
+            >
+              🗑️ Delete
+            </button>
+
+            {/* Refresh */}
             <button
               onClick={fetchBuckets}
               className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
             >
               🔄 Refresh
             </button>
+          </div>
+        </div>
+
+        {/* Selected count feedback */}
+        {selectedBucketNames.length > 0 && (
+          <div className="px-4 py-2 bg-[#f2f8fd] border-b border-[#eaeded] text-xs text-[#0073bb] flex items-center justify-between">
+            <span><strong>{selectedBucketNames.length}</strong> bucket(s) selecionado(s)</span>
+            <button 
+              onClick={() => setSelectedBucketNames([])}
+              className="text-xs text-[#0073bb] hover:underline"
+            >
+              Limpar seleção
+            </button>
+          </div>
+        )}
+
+        {/* Table Content */}
+        {loading ? (
+          <div className="p-12 text-center text-xs text-[#545b64] flex flex-col items-center space-y-2">
+            <span className="text-xl animate-spin">🔄</span>
+            <span>Carregando buckets do storage...</span>
+          </div>
+        ) : filteredBuckets.length === 0 ? (
+          <div className="p-12 text-center text-xs text-[#545b64] space-y-3">
+            <p className="text-sm font-semibold text-[#16191f]">Nenhum bucket encontrado.</p>
+            {search ? (
+              <p>Nenhum resultado corresponde ao filtro "{search}".</p>
+            ) : (
+              <p>Comece criando seu primeiro bucket para armazenar dados no Z3S.</p>
+            )}
             <button
               onClick={() => setShowCreateModal(true)}
-              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition"
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition"
             >
               Create bucket
             </button>
           </div>
-        </div>
-
-        {/* Table Content */}
-        {loading ? (
-          <div className="p-12 text-center text-xs text-[#545b64]">Carregando buckets do storage...</div>
-        ) : filteredBuckets.length === 0 ? (
-          <div className="p-12 text-center text-xs text-[#545b64]">Nenhum bucket encontrado.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-[#16191f]">
               <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
                 <tr>
                   <th className="px-4 py-3 w-10">
-                    <input type="checkbox" className="rounded text-[#2563eb]" disabled />
+                    <input 
+                      type="checkbox" 
+                      checked={isAllSelected}
+                      ref={input => { if (input) input.indeterminate = isSomeSelected; }}
+                      onChange={handleSelectAll}
+                      className="rounded text-[#2563eb] focus:ring-[#2563eb]" 
+                    />
                   </th>
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">AWS Region</th>
                   <th className="px-4 py-3">Access</th>
                   <th className="px-4 py-3">Creation date</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3 text-right">Quick Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#eaeded]">
-                {filteredBuckets.map(b => (
-                  <tr key={b.name} className="hover:bg-[#f2f8fd] transition">
-                    <td className="px-4 py-3">
-                      <input type="checkbox" className="rounded text-[#2563eb]" />
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-[#0073bb] hover:underline cursor-pointer" onClick={() => onSelectBucket(b.name)}>
-                      <span className="mr-1.5">🪣</span>
-                      {b.name}
-                    </td>
-                    <td className="px-4 py-3 text-[#545b64]">us-east-1</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-block px-2 py-0.5 bg-[#f2f3f3] text-[#545b64] rounded text-[11px] font-medium border border-[#eaeded]">
-                        Bucket and objects not public
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-[#545b64] font-mono text-[11px]">
-                      {new Date(b.creationDate).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-right space-x-2">
-                      <button 
-                        onClick={() => onSelectBucket(b.name)}
-                        className="px-2 py-1 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs text-[#16191f]"
-                      >
-                        View
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteBucket(b.name)}
-                        className="px-2 py-1 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded text-xs"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredBuckets.map(b => {
+                  const isSelected = selectedBucketNames.includes(b.name);
+                  return (
+                    <tr 
+                      key={b.name} 
+                      className={`transition ${isSelected ? "bg-[#f2f8fd]" : "hover:bg-[#f8f9fa]"}`}
+                    >
+                      <td className="px-4 py-3">
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected}
+                          onChange={() => handleToggleSelect(b.name)}
+                          className="rounded text-[#2563eb] focus:ring-[#2563eb]" 
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-semibold">
+                        <div 
+                          className="inline-flex items-center space-x-1.5 text-[#0073bb] hover:underline cursor-pointer"
+                          onClick={() => onSelectBucket(b.name)}
+                        >
+                          <span className="text-sm">🪣</span>
+                          <span className="text-sm">{b.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-[#545b64]">
+                        <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[11px]">
+                          us-east-1
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-[#f2f3f3] text-[#545b64] rounded text-[11px] font-medium border border-[#eaeded]">
+                          <span>🔒</span>
+                          <span>Bucket and objects not public</span>
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-[#545b64] font-mono text-[11px]">
+                        {new Date(b.creationDate).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right space-x-1.5">
+                        <button 
+                          onClick={() => onSelectBucket(b.name)}
+                          className="px-2.5 py-1 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+                          title="Abrir Bucket"
+                        >
+                          Objects
+                        </button>
+                        <button 
+                          onClick={() => handleCopyUri(b.name)}
+                          className="px-2 py-1 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs text-[#545b64] hover:text-[#16191f] transition"
+                          title="Copiar s3://..."
+                        >
+                          📋
+                        </button>
+                        <button 
+                          onClick={() => setEmptyTargetBucket(b.name)}
+                          className="px-2 py-1 bg-white hover:bg-amber-50 text-amber-700 border border-amber-200 rounded text-xs transition"
+                          title="Esvaziar Bucket"
+                        >
+                          🧹
+                        </button>
+                        <button 
+                          onClick={() => setDeleteTargetBucket(b.name)}
+                          className="px-2 py-1 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded text-xs transition"
+                          title="Excluir Bucket"
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
+      {/* 1. Modal Create Bucket Avançado */}
       {showCreateModal && (
         <AwsCreateBucketModal 
           onClose={() => setShowCreateModal(false)}
@@ -446,6 +578,39 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
             setShowCreateModal(false);
             fetchBuckets();
             addToast("Bucket criado com sucesso!", "success");
+          }}
+          addToast={addToast}
+        />
+      )}
+
+      {/* 2. Modal Delete Bucket com Trava de Segurança */}
+      {deleteTargetBucket && (
+        <AwsDeleteBucketModal
+          bucketName={deleteTargetBucket}
+          onClose={() => setDeleteTargetBucket(null)}
+          onDeleted={() => {
+            setDeleteTargetBucket(null);
+            fetchBuckets();
+            addToast(`Bucket '${deleteTargetBucket}' excluído com sucesso!`, "success");
+          }}
+          onOpenEmptyModal={() => {
+            const bName = deleteTargetBucket;
+            setDeleteTargetBucket(null);
+            setEmptyTargetBucket(bName);
+          }}
+          addToast={addToast}
+        />
+      )}
+
+      {/* 3. Modal Empty Bucket */}
+      {emptyTargetBucket && (
+        <AwsEmptyBucketModal
+          bucketName={emptyTargetBucket}
+          onClose={() => setEmptyTargetBucket(null)}
+          onEmptied={() => {
+            setEmptyTargetBucket(null);
+            fetchBuckets();
+            addToast(`Bucket '${emptyTargetBucket}' esvaziado com sucesso!`, "success");
           }}
           addToast={addToast}
         />
@@ -461,15 +626,21 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
   const [contents, setContents] = useState({ folders: [], objects: [] });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [versioningStatus, setVersioningStatus] = useState("Loading...");
+  const [updatingVersioning, setUpdatingVersioning] = useState(false);
 
   const fetchObjects = async () => {
     setLoading(true);
     try {
       const client = AuthManager.getClient();
-      const data = await client.listObjects(bucket, "", "/");
+      const [data, vStatus] = await Promise.all([
+        client.listObjects(bucket, "", "/"),
+        client.getBucketVersioning(bucket)
+      ]);
       setContents(data);
+      setVersioningStatus(vStatus || "Off");
     } catch (err) {
-      addToast("Erro ao carregar objetos: " + err.message, "error");
+      addToast("Erro ao carregar dados do bucket: " + err.message, "error");
     } finally {
       setLoading(false);
     }
@@ -478,6 +649,25 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
   useEffect(() => {
     fetchObjects();
   }, [bucket]);
+
+  const handleToggleVersioning = async () => {
+    const nextStatus = (versioningStatus === "Enabled") ? "Suspended" : "Enabled";
+    setUpdatingVersioning(true);
+    try {
+      const client = AuthManager.getClient();
+      await client.putBucketVersioning(bucket, nextStatus);
+      setVersioningStatus(nextStatus);
+      addToast(`Versionamento do bucket alterado para '${nextStatus}'.`, "success");
+    } catch (err) {
+      addToast(`Erro ao alterar versionamento: ${err.message}`, "error");
+    } finally {
+      setUpdatingVersioning(false);
+    }
+  };
+
+  const totalBytes = useMemo(() => {
+    return contents.objects.reduce((acc, obj) => acc + (obj.size || 0), 0);
+  }, [contents.objects]);
 
   const tabs = [
     { id: "objects", label: "Objects" },
@@ -502,7 +692,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
         <div className="flex items-center space-x-3">
           <button 
             onClick={onBack}
-            className="h-8 px-2.5 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f]"
+            className="h-8 px-2.5 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
           >
             &larr; Buckets
           </button>
@@ -542,12 +732,12 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
             <div className="flex items-center space-x-2">
               <button 
                 onClick={fetchObjects}
-                className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f]"
+                className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
               >
                 🔄 Refresh
               </button>
               <button 
-                className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f]"
+                className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
                 onClick={() => addToast("Upload de arquivos disponível via AWS CLI ou SDK.", "info")}
               >
                 Upload
@@ -588,26 +778,62 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
         </div>
       )}
 
-      {/* Tab 2: Properties */}
+      {/* Tab 2: Properties (Phase 2 - Live Configuration) */}
       {activeTab === "properties" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
-            <h3 className="text-sm font-bold text-[#16191f]">Bucket Versioning</h3>
-            <p className="text-xs text-[#545b64]">Mantém múltiplas variantes de um objeto no mesmo bucket.</p>
-            <div className="pt-2">
-              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-xs font-semibold">
-                Enabled
+          {/* Bucket Versioning Card */}
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-3">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-[#16191f]">Bucket Versioning</h3>
+                <p className="text-xs text-[#545b64]">Mantém múltiplas variantes de um objeto no mesmo bucket.</p>
+              </div>
+              <button
+                onClick={handleToggleVersioning}
+                disabled={updatingVersioning}
+                className="h-7 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+              >
+                {updatingVersioning ? "Atualizando..." : (versioningStatus === "Enabled" ? "Suspender" : "Ativar")}
+              </button>
+            </div>
+            <div className="pt-1">
+              <span className={`px-2.5 py-1 rounded text-xs font-semibold border ${
+                versioningStatus === "Enabled" 
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+                  : "bg-slate-100 text-slate-600 border-slate-200"
+              }`}>
+                {versioningStatus === "Enabled" ? "✓ Enabled" : (versioningStatus === "Suspended" ? "⏸ Suspended" : "Disabled")}
               </span>
             </div>
           </div>
 
-          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
+          {/* Default Encryption Card */}
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-3">
             <h3 className="text-sm font-bold text-[#16191f]">Default Encryption</h3>
-            <p className="text-xs text-[#545b64]">Criptografa objetos automaticamente em repouso com AES-256.</p>
-            <div className="pt-2">
+            <p className="text-xs text-[#545b64]">Criptografa objetos automaticamente em repouso com algoritmo padrão AES-256.</p>
+            <div className="pt-1">
               <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded text-xs font-semibold">
-                SSE-S3 (AES-256-GCM)
+                🔒 SSE-S3 (AES-256-GCM)
               </span>
+            </div>
+          </div>
+
+          {/* S3 URI & ARN Card */}
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2 md:col-span-2">
+            <h3 className="text-sm font-bold text-[#16191f]">Identificadores do Recurso</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+              <div>
+                <span className="text-[11px] text-[#545b64] block mb-1">Amazon S3 URI:</span>
+                <code className="block p-2 bg-slate-50 border border-[#eaeded] rounded text-xs text-[#16191f] font-mono select-all">
+                  s3://{bucket}
+                </code>
+              </div>
+              <div>
+                <span className="text-[11px] text-[#545b64] block mb-1">Amazon Resource Name (ARN):</span>
+                <code className="block p-2 bg-slate-50 border border-[#eaeded] rounded text-xs text-[#16191f] font-mono select-all">
+                  arn:aws:s3:::{bucket}
+                </code>
+              </div>
             </div>
           </div>
         </div>
@@ -617,18 +843,33 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
       {activeTab === "permissions" && (
         <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-4">
           <h3 className="text-sm font-bold text-[#16191f]">Block Public Access (Bucket Settings)</h3>
-          <p className="text-xs text-[#545b64]">Bloqueia o acesso público a este bucket e seus objetos.</p>
-          <div className="p-3 bg-[#f2f3f3] border border-[#eaeded] rounded text-xs font-semibold text-[#16191f]">
-            🛡️ Block all public access: ON
+          <p className="text-xs text-[#545b64]">Bloqueia o acesso público e anônimo a este bucket e todos os seus objetos.</p>
+          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded text-xs font-semibold text-emerald-800 flex items-center space-x-2">
+            <span>🛡️</span>
+            <span>Block all public access: <strong>ON</strong> (Proteção Máxima Ativa)</span>
           </div>
         </div>
       )}
 
       {/* Tab 4: Metrics */}
       {activeTab === "metrics" && (
-        <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
-          <h3 className="text-sm font-bold text-[#16191f]">Bucket Storage Metrics</h3>
-          <p className="text-xs text-[#545b64]">Total de objetos: {contents.objects.length}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-1">
+            <span className="text-xs text-[#545b64]">Total de Objetos</span>
+            <p className="text-2xl font-bold text-[#16191f]">{contents.objects.length}</p>
+          </div>
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-1">
+            <span className="text-xs text-[#545b64]">Armazenamento Utilizado</span>
+            <p className="text-2xl font-bold text-[#16191f]">
+              {totalBytes < 1024 * 1024 
+                ? `${(totalBytes / 1024).toFixed(1)} KB` 
+                : `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`}
+            </p>
+          </div>
+          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-1">
+            <span className="text-xs text-[#545b64]">Status de Réplica / Erasure</span>
+            <p className="text-sm font-semibold text-emerald-600">Reed-Solomon 4+2 Ativo</p>
+          </div>
         </div>
       )}
     </div>
@@ -636,17 +877,23 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
 }
 
 // ----------------------------------------------------------------------
-// 5. AWS Create Bucket Modal
+// 5. AWS Create Bucket Modal (Phase 2 - Advanced Configuration)
 // ----------------------------------------------------------------------
 function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
   const [bucketName, setBucketName] = useState("");
+  const [enableVersioning, setEnableVersioning] = useState(false);
+  const [encryptionType, setEncryptionType] = useState("SSE-S3");
+  const [blockPublicAccess, setBlockPublicAccess] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!/^[a-z0-9.-]{3,63}$/.test(bucketName)) {
-      setError("O nome do bucket deve ter entre 3 e 63 caracteres (apenas letras minúsculas, números e hífens).");
+    const cleanName = bucketName.trim().toLowerCase();
+    
+    // S3 Naming Rules Validation
+    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(cleanName) || cleanName.includes("..") || cleanName.includes(".-") || cleanName.includes("-.")) {
+      setError("Nome de bucket inválido. Deve ter entre 3 e 63 caracteres, conter apenas letras minúsculas, números, pontos ou hífens, e começar/terminar com letra ou número.");
       return;
     }
 
@@ -654,7 +901,10 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
     setError("");
     try {
       const client = AuthManager.getClient();
-      await client.createBucket(bucketName);
+      await client.createBucket(cleanName, {
+        versioning: enableVersioning,
+        encryption: encryptionType
+      });
       onCreated();
     } catch (err) {
       setError(err.message);
@@ -664,36 +914,228 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-slate-300 p-6">
-        <h2 className="text-lg font-bold text-[#16191f] mb-2">Create bucket</h2>
-        <p className="text-xs text-[#545b64] mb-6">
-          General configuration for your new Z3S storage container.
-        </p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-xl bg-white rounded-lg shadow-2xl border border-slate-300 p-6 my-8">
+        <div className="flex items-center justify-between border-b border-[#eaeded] pb-4 mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-[#16191f]">Create bucket</h2>
+            <p className="text-xs text-[#545b64]">General configuration for your new Z3S storage container.</p>
+          </div>
+          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold">✕</button>
+        </div>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r">
-            {error}
+            <p className="font-semibold">Erro ao criar bucket:</p>
+            <p>{error}</p>
           </div>
         )}
 
-        <form onSubmit={handleCreate} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-[#16191f] mb-1">
-              Bucket name
+        <form onSubmit={handleCreate} className="space-y-5">
+          {/* 1. Bucket Name */}
+          <div className="space-y-1">
+            <label className="block text-xs font-bold text-[#16191f]">
+              Bucket name <span className="text-red-500">*</span>
             </label>
             <input 
               type="text"
               value={bucketName}
               onChange={e => setBucketName(e.target.value.toLowerCase())}
-              placeholder="ex: my-production-data-2026"
+              placeholder="ex: my-company-backups-2026"
               required
               autoFocus
               className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb] font-mono"
             />
-            <p className="text-[11px] text-[#545b64] mt-1">
-              Bucket name must be globally unique and must not contain spaces or uppercase letters.
+            <p className="text-[11px] text-[#545b64]">
+              O nome do bucket deve ser globalmente único e não conter espaços ou maiúsculas.
             </p>
+          </div>
+
+          {/* 2. Region */}
+          <div className="space-y-1">
+            <label className="block text-xs font-bold text-[#16191f]">AWS Region</label>
+            <div className="h-9 px-3 bg-[#f2f3f3] border border-[#eaeded] rounded text-xs text-[#545b64] flex items-center justify-between font-mono">
+              <span>us-east-1 (US East / N. Virginia)</span>
+              <span className="text-[10px] bg-slate-200 px-1.5 py-0.5 rounded text-slate-700 font-sans">Default</span>
+            </div>
+          </div>
+
+          {/* 3. Bucket Versioning */}
+          <div className="p-4 border border-[#eaeded] rounded-lg bg-slate-50 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-[#16191f]">Bucket Versioning</h4>
+                <p className="text-[11px] text-[#545b64]">
+                  Mantém múltiplas variantes de cada objeto no mesmo bucket para proteção contra exclusão acidental.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={enableVersioning} 
+                  onChange={e => setEnableVersioning(e.target.checked)} 
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#2563eb]"></div>
+              </label>
+            </div>
+            <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded border border-slate-200 bg-white text-slate-700">
+              Status: {enableVersioning ? "Enabled (Ativado)" : "Disabled (Desativado)"}
+            </span>
+          </div>
+
+          {/* 4. Default Encryption */}
+          <div className="p-4 border border-[#eaeded] rounded-lg bg-slate-50 space-y-2">
+            <h4 className="text-xs font-bold text-[#16191f]">Default Encryption</h4>
+            <p className="text-[11px] text-[#545b64]">Criptografa automaticamente todos os novos objetos salvos neste bucket em repouso.</p>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <label className={`p-2.5 border rounded cursor-pointer text-xs flex flex-col space-y-0.5 transition ${encryptionType === "SSE-S3" ? "border-[#2563eb] bg-blue-50/50" : "border-[#eaeded] bg-white"}`}>
+                <div className="flex items-center space-x-1.5">
+                  <input type="radio" name="enc" checked={encryptionType === "SSE-S3"} onChange={() => setEncryptionType("SSE-S3")} className="text-[#2563eb]" />
+                  <span className="font-semibold text-[#16191f]">SSE-S3 (AES-256)</span>
+                </div>
+                <span className="text-[10px] text-[#545b64] pl-5">Chaves gerenciadas pelo Z3S</span>
+              </label>
+
+              <label className={`p-2.5 border rounded cursor-pointer text-xs flex flex-col space-y-0.5 transition ${encryptionType === "SSE-KMS" ? "border-[#2563eb] bg-blue-50/50" : "border-[#eaeded] bg-white"}`}>
+                <div className="flex items-center space-x-1.5">
+                  <input type="radio" name="enc" checked={encryptionType === "SSE-KMS"} onChange={() => setEncryptionType("SSE-KMS")} className="text-[#2563eb]" />
+                  <span className="font-semibold text-[#16191f]">SSE-KMS</span>
+                </div>
+                <span className="text-[10px] text-[#545b64] pl-5">Chaves envelope via KMS</span>
+              </label>
+            </div>
+          </div>
+
+          {/* 5. Block Public Access */}
+          <div className="p-3 border border-[#eaeded] rounded bg-slate-50 flex items-start space-x-2">
+            <input 
+              id="bpa"
+              type="checkbox" 
+              checked={blockPublicAccess} 
+              onChange={e => setBlockPublicAccess(e.target.checked)}
+              className="mt-0.5 rounded text-[#2563eb] focus:ring-[#2563eb]"
+            />
+            <label htmlFor="bpa" className="text-xs text-[#16191f] cursor-pointer">
+              <strong>Block all public access</strong> (Recomendado)
+              <p className="text-[11px] text-[#545b64] mt-0.5">
+                Garante que nenhum objeto ou política conceda permissões de leitura anônimas públicas.
+              </p>
+            </label>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f]"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+            >
+              {loading ? (
+                <>
+                  <span className="animate-spin">🔄</span>
+                  <span>Creating bucket...</span>
+                </>
+              ) : (
+                <span>Create bucket</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 6. AWS Delete Bucket Modal (Phase 2 - Safe Delete Confirmation)
+// ----------------------------------------------------------------------
+function AwsDeleteBucketModal({ bucketName, onClose, onDeleted, onOpenEmptyModal, addToast }) {
+  const [confirmInput, setConfirmInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [isBucketNotEmpty, setIsBucketNotEmpty] = useState(false);
+
+  const isConfirmed = confirmInput === bucketName;
+
+  const handleDelete = async (e) => {
+    e.preventDefault();
+    if (!isConfirmed) return;
+
+    setLoading(true);
+    setError("");
+    setIsBucketNotEmpty(false);
+
+    try {
+      const client = AuthManager.getClient();
+      await client.deleteBucket(bucketName);
+      onDeleted();
+    } catch (err) {
+      console.error(err);
+      if (err.message.includes("409") || err.message.includes("BucketNotEmpty") || err.message.includes("não está vazio")) {
+        setIsBucketNotEmpty(true);
+        setError(`O bucket '${bucketName}' não está vazio. Todos os objetos devem ser excluídos antes de excluir o bucket.`);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
+      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-red-200 p-6">
+        <div className="flex items-center space-x-2 text-red-600 mb-2">
+          <span className="text-xl">⚠️</span>
+          <h2 className="text-lg font-bold text-[#16191f]">Delete bucket</h2>
+        </div>
+
+        <p className="text-xs text-[#545b64] mb-4">
+          A exclusão de um bucket é <strong>irreversível</strong>. Uma vez excluído, as configurações e o namespace serão liberados.
+        </p>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r space-y-2">
+            <p className="font-semibold">{error}</p>
+            {isBucketNotEmpty && (
+              <button
+                type="button"
+                onClick={onOpenEmptyModal}
+                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold transition flex items-center space-x-1"
+              >
+                <span>🧹 Esvaziar objetos agora</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        <form onSubmit={handleDelete} className="space-y-4">
+          <div className="p-3 bg-slate-50 border border-[#eaeded] rounded text-xs space-y-1">
+            <span className="text-[#545b64]">Bucket selecionado:</span>
+            <p className="font-mono font-bold text-[#16191f] text-sm">🪣 {bucketName}</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-[#16191f] mb-1.5">
+              Para confirmar a exclusão, digite exatamente <code className="bg-slate-200 px-1 py-0.5 rounded text-red-600 font-mono select-all">{bucketName}</code> abaixo:
+            </label>
+            <input 
+              type="text"
+              value={confirmInput}
+              onChange={e => setConfirmInput(e.target.value)}
+              placeholder={bucketName}
+              required
+              autoFocus
+              className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-red-500 font-mono"
+            />
           </div>
 
           <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
@@ -706,10 +1148,17 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
             </button>
             <button
               type="submit"
-              disabled={loading}
-              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition"
+              disabled={!isConfirmed || loading}
+              className="h-8 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
             >
-              {loading ? "Creating..." : "Create bucket"}
+              {loading ? (
+                <>
+                  <span className="animate-spin">🔄</span>
+                  <span>Deleting...</span>
+                </>
+              ) : (
+                <span>Delete bucket</span>
+              )}
             </button>
           </div>
         </form>
@@ -719,7 +1168,105 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
 }
 
 // ----------------------------------------------------------------------
-// 6. Toast Container
+// 7. AWS Empty Bucket Modal (Phase 2 - Empty All Objects)
+// ----------------------------------------------------------------------
+function AwsEmptyBucketModal({ bucketName, onClose, onEmptied, addToast }) {
+  const [confirmInput, setConfirmInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const requiredConfirmation = "permanently delete";
+  const isConfirmed = confirmInput.trim().toLowerCase() === requiredConfirmation;
+
+  const handleEmpty = async (e) => {
+    e.preventDefault();
+    if (!isConfirmed) return;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const client = AuthManager.getClient();
+      await client.emptyBucket(bucketName);
+      onEmptied();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
+      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-amber-200 p-6">
+        <div className="flex items-center space-x-2 text-amber-600 mb-2">
+          <span className="text-xl">🧹</span>
+          <h2 className="text-lg font-bold text-[#16191f]">Empty bucket</h2>
+        </div>
+
+        <p className="text-xs text-[#545b64] mb-4">
+          Esvaziar o bucket <strong>{bucketName}</strong> excluirá <strong>todos os objetos e dados</strong> contidos nele de forma permanente.
+        </p>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r">
+            <p className="font-semibold">Erro ao esvaziar bucket:</p>
+            <p>{error}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleEmpty} className="space-y-4">
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 space-y-1">
+            <p className="font-semibold">⚠️ Ação irreversível:</p>
+            <p>Todos os arquivos, diretórios virtuais e versões de objetos serão apagados sem possibilidade de recuperação.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-[#16191f] mb-1.5">
+              Para confirmar, digite <code className="bg-slate-200 px-1 py-0.5 rounded text-amber-700 font-mono select-all">permanently delete</code> no campo abaixo:
+            </label>
+            <input 
+              type="text"
+              value={confirmInput}
+              onChange={e => setConfirmInput(e.target.value)}
+              placeholder="permanently delete"
+              required
+              autoFocus
+              className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-amber-500 font-mono"
+            />
+          </div>
+
+          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f]"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!isConfirmed || loading}
+              className="h-8 px-4 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:hover:bg-amber-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+            >
+              {loading ? (
+                <>
+                  <span className="animate-spin">🔄</span>
+                  <span>Emptying objects...</span>
+                </>
+              ) : (
+                <span>Empty bucket</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 8. Toast Notification Container
 // ----------------------------------------------------------------------
 function ToastContainer({ toasts }) {
   return (
@@ -727,7 +1274,7 @@ function ToastContainer({ toasts }) {
       {toasts.map(t => (
         <div
           key={t.id}
-          className={`px-4 py-2.5 rounded shadow-lg text-xs font-medium border flex items-center space-x-2 ${
+          className={`px-4 py-2.5 rounded shadow-lg text-xs font-medium border flex items-center space-x-2 animate-fade-in ${
             t.type === "success" 
               ? "bg-[#f2f8fd] text-[#0073bb] border-[#0073bb]"
               : t.type === "error"

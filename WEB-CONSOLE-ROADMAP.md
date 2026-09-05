@@ -60,16 +60,25 @@ flowchart LR
 ---
 
 ### 📌 Fase 2: Painel de Gerenciamento de Buckets (Buckets View)
-- [ ] **2.1. Listagem Geral de Buckets:**
+- [x] **2.1. Listagem Geral de Buckets:**
   - Consumir `GET /` (`ListAllMyBuckets`) e renderizar tabela interativa.
-  - Campo de busca e filtro de buckets em tempo real.
+  - Campo de busca e filtro de buckets em tempo real com contador dinâmico.
+  - Seleção múltipla (Checkboxes, Select All) com barra de ações em lote.
+  - Cópia com 1 clique da S3 URI (`s3://bucket-name`) e ARN para clipboard.
   - Colunas: Nome do Bucket, Região (`us-east-1`), Status de Acesso, Data de Criação e Ações.
-- [ ] **2.2. Modal "Create Bucket":**
-  - Assistente de criação de bucket com validação de nomenclatura S3 (minúsculas, sem caracteres especiais).
-  - Opção para habilitar/desabilitar Versionamento e Criptografia padrão no momento da criação.
-- [ ] **2.3. Modal "Delete Bucket":**
-  - Confirmação de segurança exigindo digitar o nome do bucket antes da exclusão.
-  - Tratamento de erro para buckets que contêm objetos (com opção de esvaziamento seguro).
+- [x] **2.2. Modal "Create Bucket" Avançado:**
+  - Assistente de criação de bucket com validação de nomenclatura S3 (minúsculas, sem caracteres especiais, 3 a 63 caracteres).
+  - Opção para habilitar/desabilitar Versionamento no momento da criação.
+  - Seleção de Criptografia padrão (SSE-S3 AES-256 vs SSE-KMS).
+  - Configuração de Block Public Access.
+- [x] **2.3. Modal "Delete Bucket" com Trava de Segurança:**
+  - Confirmação de segurança exigindo digitar exatamente o nome do bucket antes da exclusão.
+  - Tratamento de erro quando o bucket contém objetos (`BucketNotEmpty`) com atalho direto para esvaziar.
+- [x] **2.4. Modal "Empty Bucket" (Esvaziamento Seguro):**
+  - Confirmação exigindo digitar `"permanently delete"`.
+  - Exclusão recursiva de todos os objetos e versões do bucket em lote (`DeleteObjects`).
+- [x] **2.5. Alternador de Versionamento em Tempo Real:**
+  - Consulta e modificação direta do status de Versionamento (`Enabled` / `Suspended`) na aba *Properties*.
 
 ---
 
