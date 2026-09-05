@@ -9,4 +9,9 @@
 data/
 *.log
 session.txt
+__pycache__/
+*.pyc
+node_modules/
+web/console/dist/
+web/console/node_modules/
 
