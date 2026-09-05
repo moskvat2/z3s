@@ -46,8 +46,8 @@ flowchart LR
 - [x] 2.3. Confirmar que o estado do Nó 2 está perfeitamente espelhado com o Nó 1.
 
 ### Fase 3: Simulação de Desastre Catastrófico no Nó Primário (Simulated Outage)
-- [ ] 3.1. Simular falha abrupta e completa do Nó 1 (`172.16.0.100`) via parada forçada do serviço / isolamento de rede.
-- [ ] 3.2. Confirmar a queda do nó primário (clientes recebem `Connection Refused / 503 Service Unavailable`).
+- [x] 3.1. Simular falha abrupta e completa do Nó 1 (`172.16.0.100`) via parada forçada do serviço / isolamento de rede.
+- [x] 3.2. Confirmar a queda do nó primário (clientes recebem `Connection Refused / 503 Service Unavailable`).
 
 ### Fase 4: Ativação do Failover e Promoção do Nó de DR (`172.16.0.104`)
 - [ ] 4.1. Promover o Nó 2 (`172.16.0.104`) a Primário Ativo.
