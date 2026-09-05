@@ -594,6 +594,33 @@ impl S3GatewayService {
             };
         }
 
+        // 3. Proteção de Acesso Anônimo no Root ("/" ou ""):
+        // Se for navegador, redireciona para o Console Web (/console/). Se for chamada de API S3 sem auth, retorna 403 AccessDenied!
+        if (path == "/" || path.is_empty()) && !headers.contains_key("authorization") {
+            let is_browser = headers
+                .get("accept")
+                .map(|a| a.contains("text/html"))
+                .unwrap_or(false)
+                || (!headers.contains_key("x-amz-date") && !headers.contains_key("x-amz-content-sha256"));
+
+            if is_browser {
+                let mut redirect_headers = HashMap::new();
+                redirect_headers.insert("location".to_string(), "/console/".to_string());
+                redirect_headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+                return GatewayHttpResponse {
+                    status: 302,
+                    headers: redirect_headers,
+                    body: Bytes::from("Redirecting to /console/"),
+                };
+            } else {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::AccessDenied,
+                    "Access Denied: Anonymous access to ListAllMyBuckets is not permitted. Please provide AWS SigV4 authentication.",
+                    Some("/".to_string()),
+                );
+            }
+        }
+
         if let Err(err_code) = self.authenticate(method, path, query, headers) {
             return GatewayHttpResponse::error(
                 err_code,

@@ -11,6 +11,7 @@ WORKDIR /usr/src/z3s
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY bin ./bin
+COPY web ./web
 
 # Build static release binary
 RUN cargo build --release --bin z3s-server
