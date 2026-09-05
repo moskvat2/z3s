@@ -60,7 +60,7 @@ flowchart LR
 - [x] 5.3. Executar escritas de novos objetos no Nó 2 durante o período de contingência.
 
 ### Fase 6: Failback, Ressincronização e Restauração do Nó Primário
-- [ ] 6.1. Reestabelecer o Nó 1 (`172.16.0.100`).
-- [ ] 6.2. Sincronizar os novos dados criados durante o desastre do Nó 2 de volta para o Nó 1.
-- [ ] 6.3. Retornar a operação para o estado padrão com ambos os nós ativos e íntegros.
-- [ ] 6.4. Gerar o relatório final consolidado de Disaster Recovery.
+- [x] 6.1. Reestabelecer o Nó 1 (`172.16.0.100`).
+- [x] 6.2. Sincronizar os novos dados criados durante o desastre do Nó 2 de volta para o Nó 1.
+- [x] 6.3. Retornar a operação para o estado padrão com ambos os nós ativos e íntegros.
+- [x] 6.4. Gerar o relatório final consolidado de Disaster Recovery.
