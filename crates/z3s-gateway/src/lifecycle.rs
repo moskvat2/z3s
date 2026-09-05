@@ -138,7 +138,7 @@ impl LifecycleEngine {
                 }
             }
 
-            if let Some(transition) = &rule.transition {
+            for transition in &rule.transitions {
                 if let Some(days) = transition.days {
                     let age = now.signed_duration_since(created_at);
                     if age >= Duration::days(days as i64) {
@@ -220,10 +220,10 @@ mod tests {
                     date: None,
                     expired_object_delete_marker: None,
                 }),
-                transition: Some(LifecycleTransition {
+                transitions: vec![LifecycleTransition {
                     days: Some(7),
                     storage_class: "GLACIER".to_string(),
-                }),
+                }],
                 noncurrent_version_expiration: Some(NoncurrentVersionExpiration {
                     noncurrent_days: 60,
                     newer_noncurrent_versions: None,

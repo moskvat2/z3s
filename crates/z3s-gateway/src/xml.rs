@@ -620,8 +620,8 @@ pub struct LifecycleRule {
     pub filter: Option<LifecycleFilter>,
     #[serde(rename = "Expiration", default, skip_serializing_if = "Option::is_none")]
     pub expiration: Option<LifecycleExpiration>,
-    #[serde(rename = "Transition", default, skip_serializing_if = "Option::is_none")]
-    pub transition: Option<LifecycleTransition>,
+    #[serde(rename = "Transition", default, skip_serializing_if = "Vec::is_empty")]
+    pub transitions: Vec<LifecycleTransition>,
     #[serde(rename = "NoncurrentVersionExpiration", default, skip_serializing_if = "Option::is_none")]
     pub noncurrent_version_expiration: Option<NoncurrentVersionExpiration>,
     #[serde(rename = "AbortIncompleteMultipartUpload", default, skip_serializing_if = "Option::is_none")]
