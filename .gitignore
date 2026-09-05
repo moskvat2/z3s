@@ -8,3 +8,5 @@
 !.env.example
 data/
 *.log
+session.txt
+

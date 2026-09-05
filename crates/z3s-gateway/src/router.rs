@@ -17,6 +17,8 @@ pub enum S3Action {
     DeleteBucketPolicy { bucket: String },
     GetBucketCors { bucket: String },
     GetBucketLifecycle { bucket: String },
+    PutBucketLifecycle { bucket: String },
+    DeleteBucketLifecycle { bucket: String },
     GetBucketTagging { bucket: String },
     GetBucketEncryption { bucket: String },
     PutBucketEncryption { bucket: String },
@@ -98,6 +100,11 @@ impl S3Router {
                         bucket,
                     });
                 }
+                if query.map_or(false, |q| Self::has_query_flag(q, "lifecycle") || Self::has_query_flag(q, "lifecycleConfiguration")) {
+                    return Some(S3Action::PutBucketLifecycle {
+                        bucket,
+                    });
+                }
                 Some(S3Action::CreateBucket {
                     bucket,
                 })
@@ -111,6 +118,11 @@ impl S3Router {
                 }
                 if query.map_or(false, |q| Self::has_query_flag(q, "policy")) {
                     return Some(S3Action::DeleteBucketPolicy {
+                        bucket,
+                    });
+                }
+                if query.map_or(false, |q| Self::has_query_flag(q, "lifecycle") || Self::has_query_flag(q, "lifecycleConfiguration")) {
+                    return Some(S3Action::DeleteBucketLifecycle {
                         bucket,
                     });
                 }

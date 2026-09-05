@@ -1,10 +1,12 @@
+use crate::gc::GcReport;
+use crate::lifecycle::{LifecycleEngine, LifecycleReport};
 use crate::router::{S3Action, S3Router};
 use crate::xml::{
     AccessControlPolicy, BucketItem, CommonPrefixItem, CompleteMultipartUploadResult,
     CopyObjectResult, DeleteMarkerItem, DeletedItem, DeleteResult, InitiateMultipartUploadResult,
-    ListAllMyBucketsResult, ListBucketResult, ListMultipartUploadsResult, ListVersionsResult,
-    LocationConstraint, ObjectItem, S3XmlError, ServerSideEncryptionConfiguration, VersionItem,
-    VersioningConfiguration,
+    LifecycleConfiguration, ListAllMyBucketsResult, ListBucketResult, ListMultipartUploadsResult,
+    ListVersionsResult, LocationConstraint, ObjectItem, S3XmlError, ServerSideEncryptionConfiguration,
+    VersionItem, VersioningConfiguration,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -22,7 +24,7 @@ use z3s_common::types::{BucketName, ByteRange, ETag, ObjectKey, ShardId, Version
 use z3s_common::S3ErrorCode;
 use z3s_erasure::ErasureEngine;
 use z3s_kms::{BucketPolicy, EncryptedDataKey, KmsEngine, PolicyEffect};
-use z3s_storage::StorageEngine;
+use z3s_storage::{AutoHealingEngine, HealingReport, StorageEngine};
 
 fn decode_key_32(s: &str) -> Option<[u8; 32]> {
     if let Ok(bytes) = hex::decode(s) {
@@ -87,6 +89,16 @@ impl GatewayHttpResponse {
         headers.insert("Content-Length".to_string(), "0".to_string());
         Self {
             status: 200,
+            headers,
+            body: Bytes::new(),
+        }
+    }
+
+    pub fn no_content() -> Self {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Length".to_string(), "0".to_string());
+        Self {
+            status: 204,
             headers,
             body: Bytes::new(),
         }
@@ -167,6 +179,8 @@ pub struct S3GatewayService {
     pub erasure: Arc<ErasureEngine>,
     pub credentials: Arc<dyn CredentialsProvider>,
     pub kms: Arc<KmsEngine>,
+    pub lifecycle_engine: Arc<LifecycleEngine>,
+    pub auto_healer: Arc<AutoHealingEngine>,
     pub metadata_dir: Option<std::path::PathBuf>,
     buckets: RwLock<HashMap<String, BucketInfo>>,
     objects: RwLock<HashMap<String, Vec<ObjectManifest>>>,
@@ -196,6 +210,11 @@ impl S3GatewayService {
         let mut objects = HashMap::new();
         let mut policies = HashMap::new();
         let mut encryption_configs = HashMap::new();
+        let lifecycle_engine = Arc::new(LifecycleEngine::new());
+        let auto_healer = Arc::new(
+            AutoHealingEngine::new(storage.clone(), erasure.data_shards(), erasure.parity_shards())
+                .unwrap(),
+        );
 
         if let Some(ref dir) = metadata_dir {
             let _ = std::fs::create_dir_all(dir);
@@ -243,6 +262,16 @@ impl S3GatewayService {
                     }
                 }
             }
+            let lifecycle_file = dir.join("lifecycles.json");
+            if lifecycle_file.exists() {
+                if let Ok(data) = std::fs::read_to_string(&lifecycle_file) {
+                    if let Ok(loaded) = serde_json::from_str::<HashMap<String, LifecycleConfiguration>>(&data) {
+                        for (b, cfg) in loaded {
+                            lifecycle_engine.put_configuration(&b, cfg);
+                        }
+                    }
+                }
+            }
         }
 
         Self {
@@ -251,6 +280,8 @@ impl S3GatewayService {
             erasure,
             credentials,
             kms: Arc::new(KmsEngine::new()),
+            lifecycle_engine,
+            auto_healer,
             metadata_dir,
             buckets: RwLock::new(buckets),
             objects: RwLock::new(objects),
@@ -298,6 +329,143 @@ impl S3GatewayService {
                 let _ = std::fs::write(dir.join("encryption.json"), json);
             }
         }
+    }
+
+    pub fn persist_lifecycles(&self) {
+        if let Some(ref dir) = self.metadata_dir {
+            let mut map = HashMap::new();
+            let b_guard = self.buckets.read().unwrap();
+            for b in b_guard.keys() {
+                if let Some(cfg) = self.lifecycle_engine.get_configuration(b) {
+                    map.insert(b.clone(), cfg);
+                }
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&map) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("lifecycles.json"), json);
+            }
+        }
+    }
+
+    /// Executa um ciclo completo de Auto-Healing em todos os objetos do gateway
+    pub fn run_healing_cycle(&self) -> HealingReport {
+        let mut total_report = HealingReport::default();
+        let objs_guard = self.objects.read().unwrap();
+        for versions in objs_guard.values() {
+            for manifest in versions {
+                let r = self.auto_healer.heal_manifest(manifest);
+                total_report.total_objects_scanned += r.total_objects_scanned;
+                total_report.total_parts_scanned += r.total_parts_scanned;
+                total_report.corrupted_or_missing_shards_detected += r.corrupted_or_missing_shards_detected;
+                total_report.shards_repaired_successfully += r.shards_repaired_successfully;
+                total_report.unrecoverable_parts += r.unrecoverable_parts;
+            }
+        }
+        total_report
+    }
+
+    /// Executa a coleta de lixo: expurga shards órfãos e compacta arquivos de Extent selados
+    pub fn run_garbage_collection(&self) -> Result<GcReport, z3s_storage::StorageError> {
+        let mut active_shards = HashSet::new();
+        {
+            let objs = self.objects.read().unwrap();
+            for versions in objs.values() {
+                for manifest in versions {
+                    for shard in &manifest.shards {
+                        active_shards.insert(shard.shard_id.0);
+                    }
+                    for part in &manifest.parts {
+                        for shard in &part.shards {
+                            active_shards.insert(shard.shard_id.0);
+                        }
+                    }
+                }
+            }
+        }
+        {
+            let mps = self.multiparts.read().unwrap();
+            for mp in mps.values() {
+                for part in mp.parts.values() {
+                    for shard in &part.shards {
+                        active_shards.insert(shard.shard_id.0);
+                    }
+                }
+            }
+        }
+
+        let mut report = GcReport::default();
+        for loc in self.storage.list_shards() {
+            if !active_shards.contains(&loc.shard_id) {
+                self.storage.delete_shard(&loc.shard_id)?;
+                report.unreferenced_shards_deleted += 1;
+            }
+        }
+
+        let comp = self.storage.compact_sealed_extents()?;
+        report.extents_compacted = comp.extents_reclaimed;
+        report.bytes_reclaimed = comp.bytes_reclaimed;
+
+        Ok(report)
+    }
+
+    /// Executa a avaliação de regras de ciclo de vida em todos os buckets
+    pub fn run_lifecycle_cycle(&self) -> LifecycleReport {
+        let mut report = LifecycleReport::default();
+        let now = chrono::Utc::now();
+        let buckets: Vec<String> = {
+            self.buckets.read().unwrap().keys().cloned().collect()
+        };
+
+        for bucket in buckets {
+            let mut keys_to_delete = Vec::new();
+            let mut noncurrent_to_purge = Vec::new();
+
+            {
+                let objs = self.objects.read().unwrap();
+                for (composite_key, versions) in objs.iter() {
+                    if !composite_key.starts_with(&format!("{}/", bucket)) {
+                        continue;
+                    }
+                    for (v_idx, manifest) in versions.iter().enumerate() {
+                        let key_str = manifest.metadata.key.as_str();
+                        if v_idx == 0 && !manifest.metadata.is_delete_marker {
+                            if self.lifecycle_engine.should_expire_object(&bucket, key_str, manifest.metadata.created_at, now) {
+                                keys_to_delete.push((bucket.clone(), key_str.to_string()));
+                            }
+                        } else if v_idx > 0 {
+                            if self.lifecycle_engine.should_purge_noncurrent_version(&bucket, key_str, manifest.metadata.created_at, now) {
+                                noncurrent_to_purge.push((composite_key.clone(), manifest.metadata.version_id.as_str().to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (b, k) in keys_to_delete {
+                self.handle_delete_object(&b, &k, None);
+                report.expired_objects += 1;
+            }
+
+            for (composite_key, v_id) in noncurrent_to_purge {
+                let mut objs = self.objects.write().unwrap();
+                if let Some(versions) = objs.get_mut(&composite_key) {
+                    if let Some(pos) = versions.iter().position(|m| m.metadata.version_id.as_str() == v_id) {
+                        let removed = versions.remove(pos);
+                        for shard in &removed.shards {
+                            let _ = self.storage.delete_shard(&shard.shard_id.0);
+                        }
+                        for part in &removed.parts {
+                            for shard in &part.shards {
+                                let _ = self.storage.delete_shard(&shard.shard_id.0);
+                            }
+                        }
+                        report.noncurrent_versions_purged += 1;
+                    }
+                }
+            }
+        }
+        self.persist_objects();
+        report
     }
 
     /// Valida a assinatura SigV4 se o cabeçalho Authorization estiver presente
@@ -387,6 +555,8 @@ impl S3GatewayService {
             S3Action::DeleteBucketPolicy { bucket } => self.handle_delete_bucket_policy(&bucket),
             S3Action::GetBucketCors { bucket } => self.handle_get_bucket_cors(&bucket),
             S3Action::GetBucketLifecycle { bucket } => self.handle_get_bucket_lifecycle(&bucket),
+            S3Action::PutBucketLifecycle { bucket } => self.handle_put_bucket_lifecycle(&bucket, body),
+            S3Action::DeleteBucketLifecycle { bucket } => self.handle_delete_bucket_lifecycle(&bucket),
             S3Action::GetBucketTagging { bucket } => self.handle_get_bucket_tagging(&bucket),
             S3Action::GetBucketEncryption { bucket } => self.handle_get_bucket_encryption(&bucket),
             S3Action::PutBucketEncryption { bucket } => self.handle_put_bucket_encryption(&bucket, body),
@@ -671,11 +841,68 @@ impl S3GatewayService {
                 Some(bucket.to_string()),
             );
         }
-        GatewayHttpResponse::error(
-            S3ErrorCode::NoSuchLifecycleConfiguration,
-            "The lifecycle configuration does not exist",
-            Some(bucket.to_string()),
-        )
+        if let Some(config) = self.lifecycle_engine.get_configuration(bucket) {
+            GatewayHttpResponse::ok_xml(config.to_xml())
+        } else {
+            GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchLifecycleConfiguration,
+                "The lifecycle configuration does not exist",
+                Some(bucket.to_string()),
+            )
+        }
+    }
+
+    fn handle_put_bucket_lifecycle(&self, bucket: &str, body: &[u8]) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        let config: LifecycleConfiguration = match quick_xml::de::from_reader(body) {
+            Ok(cfg) => cfg,
+            Err(_) => {
+                // Tenta parsing flexível se houver cabeçalhos XML
+                if let Ok(body_str) = std::str::from_utf8(body) {
+                    match quick_xml::de::from_str(body_str) {
+                        Ok(cfg) => cfg,
+                        Err(_) => {
+                            return GatewayHttpResponse::error(
+                                S3ErrorCode::MalformedXML,
+                                "The XML you provided was not well-formed or did not validate against our published schema",
+                                Some(bucket.to_string()),
+                            );
+                        }
+                    }
+                } else {
+                    return GatewayHttpResponse::error(
+                        S3ErrorCode::MalformedXML,
+                        "O corpo XML de configuração de ciclo de vida é inválido",
+                        Some(bucket.to_string()),
+                    );
+                }
+            }
+        };
+
+        self.lifecycle_engine.put_configuration(bucket, config);
+        self.persist_lifecycles();
+        GatewayHttpResponse::ok_empty()
+    }
+
+    fn handle_delete_bucket_lifecycle(&self, bucket: &str) -> GatewayHttpResponse {
+        if !self.buckets.read().unwrap().contains_key(bucket) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::NoSuchBucket,
+                "O bucket especificado não existe",
+                Some(bucket.to_string()),
+            );
+        }
+
+        self.lifecycle_engine.delete_configuration(bucket);
+        self.persist_lifecycles();
+        GatewayHttpResponse::no_content()
     }
 
     fn handle_get_bucket_tagging(&self, bucket: &str) -> GatewayHttpResponse {
@@ -2895,5 +3122,92 @@ mod tests {
         let put_auto = service.handle_request("PUT", "/secure-bucket/auto-enc.txt", None, &headers, b"Texto criptografado por padrao");
         assert_eq!(put_auto.status, 200);
         assert_eq!(put_auto.headers.get("x-amz-server-side-encryption").map(|s| s.as_str()), Some("AES256"));
+    }
+
+    #[test]
+    fn test_phase6_resilience_healing_gc_and_lifecycle() {
+        use std::fs::OpenOptions;
+        use std::io::{Seek, SeekFrom, Write};
+        use z3s_storage::extent::BLOCK_HEADER_SIZE;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = Arc::new(S3GatewayService::new(
+            Uuid::new_v4(),
+            Arc::new(StorageEngine::open(temp_dir.path().join("storage"), 8192).unwrap()),
+            Arc::new(ErasureEngine::new(4, 2).unwrap()),
+            Arc::new(z3s_auth::InMemoryCredentialsStore::new()),
+        ));
+
+        let headers = HashMap::new();
+
+        // 1. Cria Bucket e testa endpoints de Lifecycle XML
+        let create_bucket = service.handle_request("PUT", "/phase6-bucket", None, &headers, &[]);
+        assert_eq!(create_bucket.status, 200);
+
+        let lifecycle_xml = r#"<LifecycleConfiguration>
+            <Rule>
+                <ID>expire-logs</ID>
+                <Status>Enabled</Status>
+                <Filter><Prefix>logs/</Prefix></Filter>
+                <Expiration><Days>30</Days></Expiration>
+                <Transition><Days>10</Days><StorageClass>GLACIER</StorageClass></Transition>
+                <NoncurrentVersionExpiration><NoncurrentDays>60</NoncurrentDays></NoncurrentVersionExpiration>
+                <AbortIncompleteMultipartUpload><DaysAfterInitiation>7</DaysAfterInitiation></AbortIncompleteMultipartUpload>
+            </Rule>
+        </LifecycleConfiguration>"#;
+
+        let put_lc = service.handle_request("PUT", "/phase6-bucket", Some("lifecycle"), &headers, lifecycle_xml.as_bytes());
+        assert_eq!(put_lc.status, 200);
+
+        let get_lc = service.handle_request("GET", "/phase6-bucket", Some("lifecycle"), &headers, &[]);
+        assert_eq!(get_lc.status, 200);
+        assert!(get_lc.body.as_ref().starts_with(b"<?xml"));
+
+        let del_lc = service.handle_request("DELETE", "/phase6-bucket", Some("lifecycle"), &headers, &[]);
+        assert_eq!(del_lc.status, 204);
+
+        let get_lc_after_del = service.handle_request("GET", "/phase6-bucket", Some("lifecycle"), &headers, &[]);
+        assert_eq!(get_lc_after_del.status, 404);
+
+        // 2. Teste de Auto-Healing Ativo (Reed-Solomon 4+2)
+        let payload = b"Resilience and Auto-Healing test data validating zero-downtime recovery of damaged shards!";
+        let put_obj = service.handle_request("PUT", "/phase6-bucket/critical-file.dat", None, &headers, payload);
+        assert_eq!(put_obj.status, 200);
+
+        // Recupera localização dos shards gravados
+        let manifest = {
+            let objs = service.objects.read().unwrap();
+            objs.get("phase6-bucket/critical-file.dat").unwrap()[0].clone()
+        };
+        assert_eq!(manifest.shards.len(), 6);
+
+        // Simula corrupção física no disco do Shard 0 e exclusão do Shard 5 (paridade)
+        let shard_0_ptr = &manifest.shards[0];
+        let extent_file = temp_dir.path().join("storage").join("extents").join(format!("{}.z3se", shard_0_ptr.extent_id));
+        let mut file = OpenOptions::new().read(true).write(true).open(&extent_file).unwrap();
+        file.seek(SeekFrom::Start(shard_0_ptr.offset_in_extent + BLOCK_HEADER_SIZE as u64 + 1)).unwrap();
+        file.write_all(b"CORRUPTED_SECTOR").unwrap();
+        file.flush().unwrap();
+
+        let shard_5_ptr = &manifest.shards[5];
+        service.storage.delete_shard(&shard_5_ptr.shard_id.0).unwrap();
+
+        // Executa ciclo de Auto-Healing em background
+        let healing_report = service.run_healing_cycle();
+        assert_eq!(healing_report.corrupted_or_missing_shards_detected, 2);
+        assert_eq!(healing_report.shards_repaired_successfully, 2);
+        assert_eq!(healing_report.unrecoverable_parts, 0);
+
+        // Faz o GET do objeto -> Os dados foram totalmente reconstruídos e conferem perfeitamente
+        let get_healed = service.handle_request("GET", "/phase6-bucket/critical-file.dat", None, &headers, &[]);
+        assert_eq!(get_healed.status, 200);
+        assert_eq!(get_healed.body.as_ref(), payload);
+
+        // 3. Teste de Garbage Collection & Extent Compaction
+        let del_obj = service.handle_request("DELETE", "/phase6-bucket/critical-file.dat", None, &headers, &[]);
+        assert_eq!(del_obj.status, 204);
+
+        let gc_report = service.run_garbage_collection().unwrap();
+        assert!(gc_report.unreferenced_shards_deleted > 0 || gc_report.extents_compacted > 0);
     }
 }

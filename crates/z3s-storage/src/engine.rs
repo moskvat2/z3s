@@ -215,11 +215,149 @@ impl StorageEngine {
     pub fn list_shards(&self) -> Vec<ShardLocation> {
         self.index.all_locations()
     }
+
+    /// Compacta todos os extents selados, descartando blocos de shards deletados e recuperando espaço em disco
+    pub fn compact_sealed_extents(&self) -> Result<crate::compactor::CompactionReport, StorageError> {
+        let mut report = crate::compactor::CompactionReport::default();
+        let extents_dir = self.root_dir.join("extents");
+        let active_id = {
+            let active = self.active_extent.lock().unwrap();
+            active.header.extent_id
+        };
+
+        let mut sealed_files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&extents_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("z3se") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(ext_id) = Uuid::parse_str(stem) {
+                            if ext_id != active_id {
+                                sealed_files.push((ext_id, path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        report.extents_scanned = sealed_files.len();
+
+        for (ext_id, old_path) in sealed_files {
+            let old_file_len = std::fs::metadata(&old_path).map(|m| m.len()).unwrap_or(0);
+
+            // Coleta shards vivos pertencentes a este extent
+            let all_locs = self.index.all_locations();
+            let live_shards: Vec<ShardLocation> = all_locs
+                .into_iter()
+                .filter(|loc| loc.extent_id == ext_id)
+                .collect();
+
+            if live_shards.is_empty() {
+                // Extent totalmente morto - remove direto do disco
+                let mut sealed_map = self.sealed_extents.lock().unwrap();
+                sealed_map.remove(&ext_id);
+                drop(sealed_map);
+                let _ = std::fs::remove_file(&old_path);
+                report.extents_reclaimed += 1;
+                report.bytes_reclaimed += old_file_len;
+                continue;
+            }
+
+            // Compacta criando novo extent menor com apenas os shards vivos
+            let live_bytes: u64 = live_shards.iter().map(|s| s.payload_length).sum();
+            let new_extent_id = Uuid::new_v4();
+            let new_path = extents_dir.join(format!("{}.z3se", new_extent_id));
+            let required_capacity = (live_bytes + 64 * 1024).max(self.extent_capacity);
+            let mut new_extent = ExtentFile::create(&new_path, new_extent_id, required_capacity)?;
+
+            let mut relocated = Vec::new();
+            for loc in &live_shards {
+                let payload = self.read_shard(&loc.shard_id)?;
+                let header = new_extent.append_shard(loc.shard_id, 0, 1, &payload)?;
+                let new_loc = ShardLocation {
+                    shard_id: loc.shard_id,
+                    extent_id: new_extent_id,
+                    offset_in_extent: header.offset_in_extent,
+                    payload_length: header.payload_length,
+                    checksum_blake3: header.checksum_blake3,
+                };
+                relocated.push(new_loc);
+            }
+
+            // Registra migrações no WAL e atualiza índice atômico
+            let mut wal = self.wal.lock().unwrap();
+            for new_loc in &relocated {
+                wal.append(&WalRecord::ShardCommitted {
+                    shard_id: new_loc.shard_id,
+                    extent_id: new_loc.extent_id,
+                    offset_in_extent: new_loc.offset_in_extent,
+                    payload_length: new_loc.payload_length,
+                    checksum_blake3: new_loc.checksum_blake3,
+                })?;
+                self.index.insert(new_loc.clone());
+            }
+            drop(wal);
+
+            // Substitui no mapa de extents selados e deleta arquivo antigo
+            let mut sealed_map = self.sealed_extents.lock().unwrap();
+            sealed_map.remove(&ext_id);
+            let opened_new = ExtentFile::open(&new_path)?;
+            sealed_map.insert(new_extent_id, opened_new);
+            drop(sealed_map);
+
+            let new_file_len = std::fs::metadata(&new_path).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&old_path);
+
+            report.extents_reclaimed += 1;
+            report.live_shards_retained += live_shards.len();
+            report.bytes_reclaimed += old_file_len.saturating_sub(new_file_len);
+        }
+
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_storage_extent_compaction_reclaims_space() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        // Cria engine com capacidade pequena de extent para forçar criação de extents selados
+        let engine = Arc::new(StorageEngine::open(temp_dir.path(), 8192).unwrap());
+
+        let shard_1 = Uuid::new_v4();
+        let shard_2 = Uuid::new_v4();
+        let shard_3 = Uuid::new_v4();
+
+        // 1. Grava shards
+        let payload = vec![0xAA; 3000];
+        engine.write_shard(shard_1, 0, 3, &payload).unwrap();
+        engine.write_shard(shard_2, 1, 3, &payload).unwrap();
+        // Shard 3 vai estourar a capacidade do extent 1 e criar novo extent
+        engine.write_shard(shard_3, 2, 3, &payload).unwrap();
+
+        // 2. Deleta shard_1 (deixando buraco no primeiro extent)
+        engine.delete_shard(&shard_1).unwrap();
+
+        // 3. Roda a compactação
+        let compactor = crate::compactor::ExtentCompactor::new(engine.clone());
+        let report = compactor.run_compaction().unwrap();
+
+        assert!(report.extents_reclaimed > 0);
+        assert_eq!(report.live_shards_retained, 1); // shard_2 foi mantido e relocado
+
+        // 4. Verifica que os shards vivos continuam legíveis com conteúdo intacto
+        let read_2 = engine.read_shard(&shard_2).unwrap();
+        assert_eq!(read_2, payload);
+        let read_3 = engine.read_shard(&shard_3).unwrap();
+        assert_eq!(read_3, payload);
+
+        // shard_1 deve continuar reportado como não encontrado
+        assert!(engine.read_shard(&shard_1).is_err());
+    }
 
     #[test]
     fn test_storage_engine_write_read_range_delete() {

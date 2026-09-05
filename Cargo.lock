@@ -1676,6 +1676,7 @@ dependencies = [
  "tracing",
  "uuid",
  "z3s-common",
+ "z3s-erasure",
 ]
 
 [[package]]

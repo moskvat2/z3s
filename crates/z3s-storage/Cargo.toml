@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 z3s-common.workspace = true
+z3s-erasure.workspace = true
 tokio.workspace = true
 bytes.workspace = true
 thiserror.workspace = true

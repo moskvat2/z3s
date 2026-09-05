@@ -114,6 +114,11 @@ impl MetadataStateMachine {
             .take_while(move |(k, _)| k.starts_with(&start_key) && k.starts_with(&bucket_prefix))
     }
 
+    /// Retorna todos os manifestos de objetos registrados no catálogo
+    pub fn list_all_manifests(&self) -> Vec<ObjectManifest> {
+        self.objects.values().cloned().collect()
+    }
+
     /// Cria um snapshot completo da máquina de estados
     pub fn create_snapshot(&self) -> MetadataSnapshot {
         MetadataSnapshot {

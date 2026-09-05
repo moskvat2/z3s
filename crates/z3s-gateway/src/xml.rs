@@ -600,3 +600,83 @@ impl ServerSideEncryptionConfiguration {
     }
 }
 
+/// Configuração de Ciclo de Vida do Bucket (GetBucketLifecycleConfiguration / PutBucketLifecycleConfiguration)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename = "LifecycleConfiguration")]
+pub struct LifecycleConfiguration {
+    #[serde(rename = "@xmlns", default = "default_s3_xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Rule")]
+    pub rules: Vec<LifecycleRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleRule {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "Status")]
+    pub status: String, // "Enabled" | "Disabled"
+    #[serde(rename = "Filter", default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<LifecycleFilter>,
+    #[serde(rename = "Expiration", default, skip_serializing_if = "Option::is_none")]
+    pub expiration: Option<LifecycleExpiration>,
+    #[serde(rename = "Transition", default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<LifecycleTransition>,
+    #[serde(rename = "NoncurrentVersionExpiration", default, skip_serializing_if = "Option::is_none")]
+    pub noncurrent_version_expiration: Option<NoncurrentVersionExpiration>,
+    #[serde(rename = "AbortIncompleteMultipartUpload", default, skip_serializing_if = "Option::is_none")]
+    pub abort_incomplete_multipart_upload: Option<AbortIncompleteMultipartUpload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LifecycleFilter {
+    #[serde(rename = "Prefix", default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleExpiration {
+    #[serde(rename = "Days", default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<u32>,
+    #[serde(rename = "Date", default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(rename = "ExpiredObjectDeleteMarker", default, skip_serializing_if = "Option::is_none")]
+    pub expired_object_delete_marker: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleTransition {
+    #[serde(rename = "Days", default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<u32>,
+    #[serde(rename = "StorageClass")]
+    pub storage_class: String, // "STANDARD_IA", "GLACIER", etc.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoncurrentVersionExpiration {
+    #[serde(rename = "NoncurrentDays")]
+    pub noncurrent_days: u32,
+    #[serde(rename = "NewerNoncurrentVersions", default, skip_serializing_if = "Option::is_none")]
+    pub newer_noncurrent_versions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbortIncompleteMultipartUpload {
+    #[serde(rename = "DaysAfterInitiation")]
+    pub days_after_initiation: u32,
+}
+
+impl LifecycleConfiguration {
+    pub fn new(rules: Vec<LifecycleRule>) -> Self {
+        Self {
+            xmlns: default_s3_xmlns(),
+            rules,
+        }
+    }
+
+    pub fn to_xml(&self) -> String {
+        let body = to_string(self).unwrap();
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", body)
+    }
+}
+
