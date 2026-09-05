@@ -118,6 +118,77 @@ impl SigV4Engine {
         Self::hmac_sha256(&k_service, b"aws4_request")
     }
 
+    pub fn uri_encode(s: &str, encode_slash: bool) -> String {
+        let mut encoded = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    encoded.push(b as char);
+                }
+                b'/' if !encode_slash => {
+                    encoded.push('/');
+                }
+                _ => {
+                    encoded.push_str(&format!("%{:02X}", b));
+                }
+            }
+        }
+        encoded
+    }
+
+    pub fn url_decode(s: &str) -> String {
+        let mut result = Vec::new();
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                    result.push(val);
+                    i += 3;
+                    continue;
+                }
+            } else if bytes[i] == b'+' {
+                result.push(b' ');
+                i += 1;
+                continue;
+            }
+            result.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&result).into_owned()
+    }
+
+    /// Constrói a Canonical Query String estritamente ordenada e codificada segundo a RFC 3986
+    pub fn build_canonical_query_string(raw_query: &str) -> String {
+        let query = raw_query.trim_start_matches('?');
+        if query.is_empty() {
+            return String::new();
+        }
+
+        let mut params = Vec::new();
+        for part in query.split('&') {
+            if part.is_empty() {
+                continue;
+            }
+            let (k, v) = if let Some((k, v)) = part.split_once('=') {
+                (k, v)
+            } else {
+                (part, "")
+            };
+            let enc_k = Self::uri_encode(&Self::url_decode(k), true);
+            let enc_v = Self::uri_encode(&Self::url_decode(v), true);
+            params.push((enc_k, enc_v));
+        }
+
+        params.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        params
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
     /// Constrói o Canonical Request oficial do S3
     pub fn build_canonical_request(
         http_method: &str,

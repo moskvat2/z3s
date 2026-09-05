@@ -498,12 +498,19 @@ impl S3GatewayService {
                 btree_headers.insert(k.to_ascii_lowercase(), v.clone());
             }
 
+            let canonical_query = SigV4Engine::build_canonical_query_string(query.unwrap_or(""));
+            let canonical_uri = if path.is_empty() || !path.starts_with('/') {
+                format!("/{}", path)
+            } else {
+                path.to_string()
+            };
+
             SigV4Engine::verify(
                 &auth_context,
                 self.credentials.as_ref(),
                 method,
-                path,
-                query.unwrap_or(""),
+                &canonical_uri,
+                &canonical_query,
                 &btree_headers,
                 &payload_hash,
                 &timestamp,
