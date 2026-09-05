@@ -314,6 +314,24 @@ impl StorageEngine {
             report.bytes_reclaimed += old_file_len.saturating_sub(new_file_len);
         }
 
+        // Se o storage estiver completamente vazio ou o extent ativo não possuir shards vivos, reseta o ativo
+        let all_locs = self.index.all_locations();
+        if all_locs.is_empty() {
+            let mut active = self.active_extent.lock().unwrap();
+            let old_active_path = active.path.clone();
+            let old_active_len = std::fs::metadata(&old_active_path).map(|m| m.len()).unwrap_or(0);
+            let active_extent_id = Uuid::new_v4();
+            let active_extent_path = extents_dir.join(format!("{}.z3se", active_extent_id));
+            if let Ok(new_active) = ExtentFile::create(&active_extent_path, active_extent_id, self.extent_capacity) {
+                *active = new_active;
+                let _ = std::fs::remove_file(&old_active_path);
+                report.bytes_reclaimed += old_active_len.saturating_sub(4096);
+            }
+            if let Ok(mut wal) = self.wal.lock() {
+                let _ = wal.truncate();
+            }
+        }
+
         Ok(report)
     }
 }

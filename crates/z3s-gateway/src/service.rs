@@ -2172,6 +2172,9 @@ impl S3GatewayService {
                 }
                 drop(map);
                 self.persist_objects();
+                let _ = self.storage.compact_sealed_extents();
+            } else {
+                drop(map);
             }
             let mut headers = HashMap::new();
             headers.insert("Content-Length".to_string(), "0".to_string());
@@ -2323,6 +2326,7 @@ impl S3GatewayService {
         }
         drop(map);
         self.persist_objects();
+        let _ = self.storage.compact_sealed_extents();
 
         GatewayHttpResponse::ok_xml(DeleteResult::new(deleted_items).to_xml())
     }
@@ -3302,10 +3306,66 @@ mod tests {
         assert_eq!(get_healed.body.as_ref(), payload);
 
         // 3. Teste de Garbage Collection & Extent Compaction
+        // Simula a criação de um shard órfão (ex: upload multipart abortado)
+        let orphan_id = Uuid::new_v4();
+        let _ = service.storage.write_shard(orphan_id, 0, 1, b"ORPHAN_DATA_LEAK").unwrap();
+
         let del_obj = service.handle_request("DELETE", "/phase6-bucket/critical-file.dat", None, &headers, &[]);
         assert_eq!(del_obj.status, 204);
 
         let gc_report = service.run_garbage_collection().unwrap();
-        assert!(gc_report.unreferenced_shards_deleted > 0 || gc_report.extents_compacted > 0);
+        assert!(gc_report.unreferenced_shards_deleted > 0 || gc_report.extents_compacted > 0 || gc_report.bytes_reclaimed > 0);
+    }
+
+    #[test]
+    fn test_extent_reclamation_after_full_bucket_deletion() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(StorageEngine::open(temp_dir.path().join("storage"), 10 * 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+
+        let service = S3GatewayService::new(Uuid::new_v4(), storage, erasure, credentials);
+        let headers = HashMap::new();
+
+        // 1. Cria bucket
+        let res_put_b = service.handle_request("PUT", "/reclaim-bucket", None, &headers, &[]);
+        assert_eq!(res_put_b.status, 200);
+
+        // 2. Faz upload de múltiplos objetos gerando vários extents
+        let large_payload = vec![0x42u8; 1024 * 100]; // 100KB cada
+        for i in 0..10 {
+            let key = format!("/reclaim-bucket/file_{}.bin", i);
+            let res = service.handle_request("PUT", &key, None, &headers, &large_payload);
+            assert_eq!(res.status, 200);
+        }
+
+        // Verifica que arquivos .z3se existem na pasta extents
+        let extents_dir = temp_dir.path().join("storage").join("extents");
+        let initial_extents: Vec<_> = std::fs::read_dir(&extents_dir)
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(!initial_extents.is_empty());
+
+        // 3. Deleta todos os objetos do bucket
+        for i in 0..10 {
+            let key = format!("/reclaim-bucket/file_{}.bin", i);
+            let res = service.handle_request("DELETE", &key, None, &headers, &[]);
+            assert_eq!(res.status, 204);
+        }
+
+        // 4. Mede o tamanho total dos extents no disco após a exclusão
+        let mut total_extent_bytes = 0u64;
+        let mut extent_count = 0usize;
+        for entry in std::fs::read_dir(&extents_dir).unwrap().flatten() {
+            if entry.path().extension().and_then(|e| e.to_str()) == Some("z3se") {
+                total_extent_bytes += entry.metadata().unwrap().len();
+                extent_count += 1;
+            }
+        }
+
+        // Deve restar apenas 1 arquivo de extent ativo limpo (4KB de cabeçalho) e zero arquivos mortos
+        assert_eq!(extent_count, 1);
+        assert_eq!(total_extent_bytes, 4096);
     }
 }

@@ -74,7 +74,26 @@ async fn main() -> anyhow::Result<()> {
         Some(metadata_dir),
     ));
 
-    // 5. Inicia o servidor HTTP TCP
+    // 5. Inicia o Garbage Collector & Extent Compactor contínuo em segundo plano
+    let gc_service = gateway_service.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Ok(report) = gc_service.run_garbage_collection() {
+                if report.unreferenced_shards_deleted > 0 || report.extents_compacted > 0 || report.bytes_reclaimed > 0 {
+                    info!(
+                        "🧹 Storage GC/Compactor: {} shards limpos, {} extents reciclados, {} bytes liberados fisicamente no disco",
+                        report.unreferenced_shards_deleted,
+                        report.extents_compacted,
+                        report.bytes_reclaimed
+                    );
+                }
+            }
+        }
+    });
+
+    // 6. Inicia o servidor HTTP TCP
     let addr: SocketAddr = cli.bind.parse()?;
     let server = HttpServer::new(gateway_service);
 
