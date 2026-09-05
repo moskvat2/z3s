@@ -1,0 +1,14 @@
+{
+  "dr-critical-database/dr_incident_log_20260905.log": {
+    "bucket": "dr-critical-database",
+    "key": "dr_incident_log_20260905.log",
+    "size": 74,
+    "sha256": "0e9065c154768909bb74ae5c6477cfec50891c17ca86d373c10d6494dab63192"
+  },
+  "dr-financial-records/contingency_orders_batch1.csv": {
+    "bucket": "dr-financial-records",
+    "key": "contingency_orders_batch1.csv",
+    "size": 87,
+    "sha256": "78980203544d2aa4bed1f78854a687ca1740844b4ed28909702b7f220ffb1c86"
+  }
+}

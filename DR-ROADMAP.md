@@ -55,9 +55,9 @@ flowchart LR
 - [x] 4.3. Medir o tempo exato de recuperação (**RTO: 1,07 segundos**).
 
 ### Fase 5: Validação de Integridade e Operações em Modo DR
-- [ ] 5.1. Listar buckets e objetos no Nó 2 promovido via AWS CLI.
-- [ ] 5.2. Baixar todos os objetos pré-desastre e validar os hashes SHA-256 bit-a-bit (zero bitrot).
-- [ ] 5.3. Executar escritas de novos objetos no Nó 2 durante o período de contingência.
+- [x] 5.1. Listar buckets e objetos no Nó 2 promovido via AWS CLI.
+- [x] 5.2. Baixar todos os objetos pré-desastre e validar os hashes SHA-256 bit-a-bit (zero bitrot, RPO = 0s).
+- [x] 5.3. Executar escritas de novos objetos no Nó 2 durante o período de contingência.
 
 ### Fase 6: Failback, Ressincronização e Restauração do Nó Primário
 - [ ] 6.1. Reestabelecer o Nó 1 (`172.16.0.100`).
