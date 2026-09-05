@@ -12,12 +12,15 @@ Este manual detalha o passo a passo completo para instalação, configuração, 
 5. [Gerenciamento como Serviço de Sistema](#5-gerenciamento-como-serviço-de-sistema)
    - [5.1. OpenRC (Alpine Linux)](#51-openrc-alpine-linux)
    - [5.2. Systemd (Ubuntu / Debian / RHEL / Rocky Linux)](#52-systemd-ubuntu--debian--rhel)
-6. [Topologias de Implantação](#6-topologias-de-implantação)
-   - [6.1. Single-Node com Multi-Drive (JBOD / Reed-Solomon)](#61-single-node-com-multi-drive)
-   - [6.2. Multi-Node em Alta Disponibilidade e Disaster Recovery (DR)](#62-multi-node-com-disaster-recovery)
-7. [Configuração de Clientes e Integração S3](#7-configuração-de-clientes-e-integração-s3)
-8. [Procedimentos de Operação e Manutenção](#8-procedimentos-de-operação-e-manutenção)
-9. [Solução de Problemas (Troubleshooting)](#9-solução-de-problemas)
+6. [Implantação com Docker e Docker Compose](#6-implantação-com-docker-e-docker-compose)
+   - [6.1. Standalone / Single-Node](#61-standalone--single-node)
+   - [6.2. Cluster Multi-Node com Docker Compose](#62-cluster-multi-node-com-docker-compose)
+7. [Topologias de Implantação Bare-Metal](#7-topologias-de-implantação-bare-metal)
+   - [7.1. Single-Node com Multi-Drive (JBOD / Reed-Solomon)](#71-single-node-com-multi-drive)
+   - [7.2. Multi-Node em Alta Disponibilidade e Disaster Recovery (DR)](#72-multi-node-com-disaster-recovery)
+8. [Configuração de Clientes e Integração S3](#8-configuração-de-clientes-e-integração-s3)
+9. [Procedimentos de Operação e Manutenção](#9-procedimentos-de-operação-e-manutenção)
+10. [Solução de Problemas (Troubleshooting)](#10-solução-de-problemas)
 
 ---
 
@@ -265,7 +268,50 @@ journalctl -u z3s -f
 
 ---
 
-## 6. Topologias de Implantação
+## 6. Implantação com Docker e Docker Compose
+
+Para ambientes conteinerizados ou para rápida inicialização em novos servidores com Docker instalado, o Z3S fornece um `Dockerfile` multi-stage otimizado com Alpine Linux e arquivos de composição pré-configurados.
+
+### 6.1. Standalone / Single-Node
+
+1. Copie o arquivo de variáveis de ambiente:
+```bash
+cp .env.example .env
+```
+
+2. Ajuste as credenciais e parâmetros em `.env`:
+```ini
+Z3S_ACCESS_KEY=MINHACHAVEDEACESSO
+Z3S_SECRET_KEY=MEUSEGREDOULTRAPROTEGIDO123456789
+Z3S_PORT=9000
+```
+
+3. Inicie o contêiner com **Docker Compose**:
+```bash
+docker compose up -d
+```
+
+4. Verifique o status e logs:
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+---
+
+### 6.2. Cluster Multi-Node com Docker Compose
+
+Para testar ou operar múltiplos nós de armazenamento simultâneos:
+
+```bash
+docker compose -f docker-compose.cluster.yml up -d
+```
+- **Nó 1:** Acessível em `http://<IP_DO_HOST>:9001`
+- **Nó 2:** Acessível em `http://<IP_DO_HOST>:9002`
+
+---
+
+## 7. Topologias de Implantação Bare-Metal
 
 ### 6.1. Single-Node com Multi-Drive (JBOD / Reed-Solomon)
 Para maximizar a vazão e eliminar o gargalo de um único disco, monte múltiplos SSDs NVMe em pontos de montagem dedicados:

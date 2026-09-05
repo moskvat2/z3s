@@ -1,0 +1,62 @@
+services:
+  z3s-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: z3s/server:latest
+    container_name: z3s-node-1
+    restart: unless-stopped
+    ports:
+      - "9001:9000"
+    environment:
+      - Z3S_BIND=0.0.0.0:9000
+      - Z3S_DATA_DIR=/data
+      - Z3S_ACCESS_KEY=${Z3S_ACCESS_KEY:-Z3SACCESSKEYEXAMPLE}
+      - Z3S_SECRET_KEY=${Z3S_SECRET_KEY:-Z3SSECRETKEYEXAMPLE1234567890ABCDEF}
+      - Z3S_DATA_SHARDS=4
+      - Z3S_PARITY_SHARDS=2
+    volumes:
+      - z3s_node1_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+  z3s-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: z3s/server:latest
+    container_name: z3s-node-2
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+    environment:
+      - Z3S_BIND=0.0.0.0:9000
+      - Z3S_DATA_DIR=/data
+      - Z3S_ACCESS_KEY=${Z3S_ACCESS_KEY:-Z3SACCESSKEYEXAMPLE}
+      - Z3S_SECRET_KEY=${Z3S_SECRET_KEY:-Z3SSECRETKEYEXAMPLE1234567890ABCDEF}
+      - Z3S_DATA_SHARDS=4
+      - Z3S_PARITY_SHARDS=2
+    volumes:
+      - z3s_node2_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+volumes:
+  z3s_node1_data:
+    driver: local
+  z3s_node2_data:
+    driver: local

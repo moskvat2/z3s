@@ -12,22 +12,22 @@ use z3s_storage::{StorageEngine, DEFAULT_EXTENT_CAPACITY};
 #[derive(Parser, Debug)]
 #[command(name = "z3s-server", version, about = "Z3S S3-Compatible Distributed Object Storage Server")]
 struct Cli {
-    #[arg(short, long, default_value = "0.0.0.0:9000")]
+    #[arg(short, long, default_value = "0.0.0.0:9000", env = "Z3S_BIND")]
     bind: String,
 
-    #[arg(short, long, default_value = "./data")]
+    #[arg(short, long, default_value = "./data", env = "Z3S_DATA_DIR")]
     data_dir: PathBuf,
 
-    #[arg(long, default_value = "Z3SACCESSKEYEXAMPLE")]
+    #[arg(long, default_value = "Z3SACCESSKEYEXAMPLE", env = "Z3S_ACCESS_KEY")]
     access_key: String,
 
-    #[arg(long, default_value = "Z3SSECRETKEYEXAMPLE1234567890ABCDEF")]
+    #[arg(long, default_value = "Z3SSECRETKEYEXAMPLE1234567890ABCDEF", env = "Z3S_SECRET_KEY")]
     secret_key: String,
 
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 4, env = "Z3S_DATA_SHARDS")]
     data_shards: usize,
 
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 2, env = "Z3S_PARITY_SHARDS")]
     parity_shards: usize,
 }
 

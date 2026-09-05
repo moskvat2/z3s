@@ -1,0 +1,8 @@
+target/
+data/
+.git/
+.env
+*.log
+*.err
+dr_manifest.json
+dr_contingency_manifest.json
