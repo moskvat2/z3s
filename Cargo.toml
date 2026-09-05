@@ -1,0 +1,84 @@
+[workspace]
+members = [
+    "crates/*",
+    "bin/*",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Z3S Core Team"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/z3s/z3s"
+rust-version = "1.80.0"
+
+[workspace.dependencies]
+# Internal crates
+z3s-common = { path = "crates/z3s-common", version = "0.1.0" }
+z3s-erasure = { path = "crates/z3s-erasure", version = "0.1.0" }
+z3s-storage = { path = "crates/z3s-storage", version = "0.1.0" }
+z3s-metadata = { path = "crates/z3s-metadata", version = "0.1.0" }
+z3s-auth = { path = "crates/z3s-auth", version = "0.1.0" }
+z3s-kms = { path = "crates/z3s-kms", version = "0.1.0" }
+z3s-cluster = { path = "crates/z3s-cluster", version = "0.1.0" }
+z3s-gateway = { path = "crates/z3s-gateway", version = "0.1.0" }
+
+# Async runtime & I/O
+tokio = { version = "1.40", features = ["full"] }
+bytes = "1.7"
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP & Web
+hyper = { version = "1.4", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util", "timeout", "load-shed", "limit"] }
+
+# Serialization & XML (S3 API format)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+quick-xml = { version = "0.36", features = ["serialize"] }
+
+# Cryptography & Hashing
+blake3 = "1.5"
+md-5 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+crc32fast = "1.4"
+hex = "0.4"
+aes-gcm = "0.10"
+
+# Erasure Coding
+reed-solomon-erasure = "6.0"
+
+# Error handling & Utilities
+thiserror = "1.0"
+anyhow = "1.0"
+tempfile = "3.12"
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging & Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+opt-level = 3
+debug = false
+lto = "fat"

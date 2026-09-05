@@ -1,0 +1,17 @@
+[package]
+name = "z3s-auth"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+z3s-common.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

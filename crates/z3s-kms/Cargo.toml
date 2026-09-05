@@ -1,0 +1,12 @@
+[package]
+name = "z3s-kms"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+z3s-common.workspace = true
+aes-gcm.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

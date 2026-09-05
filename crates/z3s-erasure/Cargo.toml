@@ -1,0 +1,13 @@
+[package]
+name = "z3s-erasure"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+z3s-common.workspace = true
+reed-solomon-erasure.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+tracing.workspace = true

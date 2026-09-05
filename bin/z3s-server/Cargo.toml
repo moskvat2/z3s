@@ -1,0 +1,20 @@
+[package]
+name = "z3s-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+z3s-common.workspace = true
+z3s-auth.workspace = true
+z3s-erasure.workspace = true
+z3s-gateway.workspace = true
+z3s-storage.workspace = true
+z3s-metadata.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
