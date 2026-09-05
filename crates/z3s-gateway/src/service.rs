@@ -2172,7 +2172,6 @@ impl S3GatewayService {
                 }
                 drop(map);
                 self.persist_objects();
-                let _ = self.storage.compact_sealed_extents();
             } else {
                 drop(map);
             }
@@ -2326,7 +2325,6 @@ impl S3GatewayService {
         }
         drop(map);
         self.persist_objects();
-        let _ = self.storage.compact_sealed_extents();
 
         GatewayHttpResponse::ok_xml(DeleteResult::new(deleted_items).to_xml())
     }
@@ -3324,7 +3322,7 @@ mod tests {
         let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
         let credentials = Arc::new(InMemoryCredentialsStore::new());
 
-        let service = S3GatewayService::new(Uuid::new_v4(), storage, erasure, credentials);
+        let service = S3GatewayService::new(Uuid::new_v4(), storage.clone(), erasure, credentials);
         let headers = HashMap::new();
 
         // 1. Cria bucket
@@ -3353,6 +3351,9 @@ mod tests {
             let res = service.handle_request("DELETE", &key, None, &headers, &[]);
             assert_eq!(res.status, 204);
         }
+
+        // Executa a compactação (como o worker de GC em background faz)
+        storage.compact_sealed_extents().unwrap();
 
         // 4. Mede o tamanho total dos extents no disco após a exclusão
         let mut total_extent_bytes = 0u64;

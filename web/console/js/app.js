@@ -673,14 +673,10 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
     setLoading(true);
     try {
       const client = AuthManager.getClient();
-      const [data, vStatus] = await Promise.all([
-        client.listObjects(bucket, "", "/"),
-        client.getBucketVersioning(bucket)
-      ]);
+      const data = await client.listObjects(bucket, "", "/");
       setContents(data);
-      setVersioningStatus(vStatus || "Off");
     } catch (err) {
-      addToast("Erro ao carregar dados do bucket: " + err.message, "error");
+      addToast("Erro ao carregar objetos: " + err.message, "error");
     } finally {
       setLoading(false);
     }
@@ -689,6 +685,13 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
   useEffect(() => {
     fetchObjects();
   }, [bucket]);
+
+  useEffect(() => {
+    if (activeTab === "properties") {
+      const client = AuthManager.getClient();
+      client.getBucketVersioning(bucket).then(v => setVersioningStatus(v || "Off"));
+    }
+  }, [activeTab, bucket]);
 
   const handleToggleVersioning = async () => {
     const nextStatus = (versioningStatus === "Enabled") ? "Suspended" : "Enabled";
