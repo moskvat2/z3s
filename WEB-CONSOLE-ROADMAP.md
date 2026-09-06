@@ -83,15 +83,15 @@ flowchart LR
 ---
 
 ### 📌 Fase 3: Navegador de Arquivos & Upload (Objects Explorer)
-- [ ] **3.1. Navegador de Pastas Virtuais & Breadcrumbs:**
+- [x] **3.1. Navegador de Pastas Virtuais & Breadcrumbs:**
   - Consumir `GET /{bucket}?list-type=2&delimiter=/&prefix={caminho}` (`ListObjectsV2`).
   - Renderizar trilha de navegação clicável (`s3://meu-bucket / pasta1 / pasta2 /`).
   - Listagem com ícones temáticos para pastas, imagens, vídeos, documentos, áudios e arquivos compactados.
-- [ ] **3.2. Modal de Upload Drag & Drop:**
+- [x] **3.2. Modal de Upload Drag & Drop:**
   - Área interativa para arrastar e soltar múltiplos arquivos ou selecionar pastas inteiras.
   - Fila de upload com cálculo de progresso individual e total em tempo real.
   - Suporte automático a *Multipart Upload* para arquivos grandes (> 5 MB).
-- [ ] **3.3. Ações de Objetos:**
+- [x] **3.3. Ações de Objetos:**
   - **Download:** Download direto de arquivos.
   - **Visualização Rápida (Preview Modal):** Pré-visualização integrada no navegador para imagens, PDFs, arquivos de texto/código, áudios e vídeos.
   - **Criar Pasta:** Modal para criação de pastas virtuais (`PUT /{bucket}/{pasta}/`).
@@ -101,24 +101,24 @@ flowchart LR
 ---
 
 ### 📌 Fase 4: Propriedades, Versionamento e URLs Pré-assinadas
-- [ ] **4.1. Aba de Propriedades do Bucket (Properties Tab):**
+- [x] **4.1. Aba de Propriedades do Bucket (Properties Tab):**
   - **Versionamento:** Alternador visual (*Toggle Switch*) para Ativar ou Suspender o versionamento do bucket.
   - **Criptografia Padrão:** Visualização e seleção do modo de criptografia (**SSE-S3** ou **SSE-KMS** com AES-256-GCM).
   - **Object Lock & WORM:** Indicador de Legal Hold e modo de retenção (Compliance / Governance).
-- [ ] **4.2. Histórico de Versões no File Explorer:**
+- [x] **4.2. Histórico de Versões no File Explorer:**
   - Botão de alternância "Show Versions" (Exibir Versões).
   - Listagem de todas as versões históricas de cada objeto, marcadores de deleção (*Delete Markers*) e opção de restauração rápida.
-- [ ] **4.3. Gerador de URLs Pré-assinadas (Presigned URLs):**
+- [x] **4.3. Gerador de URLs Pré-assinadas (Presigned URLs):**
   - Modal interativo para gerar link temporário de download seguro com tempo de expiração configurável (15 min, 1 hora, 1 dia).
   - Botão de cópia rápida para a área de transferência.
 
 ---
 
 ### 📌 Fase 5: Permissões, Políticas IAM & Editor de Bucket Policies
-- [ ] **5.1. Aba de Permissões do Bucket (Permissions Tab):**
+- [x] **5.1. Aba de Permissões do Bucket (Permissions Tab):**
   - Configuração visual de **Block Public Access** (Bloqueio de acesso público).
   - Configuração de regras de **CORS** (Cross-Origin Resource Sharing) com editor JSON.
-- [ ] **5.2. Editor Interativo de Bucket Policy:**
+- [x] **5.2. Editor Interativo de Bucket Policy:**
   - Editor de código JSON com realce de sintaxe (*Syntax Highlighting*) e validação de erros em tempo real.
   - Biblioteca de modelos pré-configurados prontos para aplicar:
     - *Acesso Somente Leitura Público (Public Read-Only)*
@@ -129,12 +129,12 @@ flowchart LR
 ---
 
 ### 📌 Fase 6: Dashboard de Monitoramento & Métricas em Tempo Real
-- [ ] **6.1. Painel Geral de Métricas do Storage:**
+- [x] **6.1. Painel Geral de Métricas do Storage:**
   - Gráficos de pizza e barras mostrando espaço utilizado vs. livre no disco `/mnt/dados`.
   - Contadores em tempo real: Total de Buckets, Total de Objetos, Total de Bytes Armazenados.
   - Taxa de requisições recentes (RPS) e distribuição de operações (GET vs. PUT vs. DELETE).
-- [ ] **6.2. Monitor de Saúde dos Nós & Auto-Healing:**
+- [x] **6.2. Monitor de Saúde dos Nós & Auto-Healing:**
   - Status de integridade dos Extents de armazenamento e registros do WAL.
   - Indicador visual do *Bitrot Scrubber* e última reconstrução Reed-Solomon realizada.
-- [ ] **6.3. Testes End-to-End da Interface:**
+- [x] **6.3. Testes End-to-End da Interface:**
   - Validação de fluxos completos na interface em navegadores Chrome, Firefox, Safari e Edge (Desktop e Mobile).

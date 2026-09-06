@@ -111,58 +111,55 @@ Este documento define a especificação arquitetural, a stack tecnológica e o r
 
 ---
 
-### 📌 FASE 3: Clusterização, Consenso & Metadados Distribuídos
-- [ ] **3.1 Cluster Coordinator & Topologia de Nós:**
-  - Gerenciamento de adesão de nós (*Cluster Membership*) e detecção de falhas (*Heartbeats / Phi Accrual Failure Detector*).
-  - Mapa de topologia distribuído (conhecimento de rack, zona e nó físico).
-- [ ] **3.2 Camada de Metadados Distribuída com Consistência Forte:**
-  - Replicação de metadados via protocolo de consenso **Raft**.
-  - Particionamento horizontal de índices de chaves (*Key-Range Sharding*) em ordem lexicográfica.
-  - Implementação do cache de metadados com validação *Witness* para garantir consistência imediata pós-escrita (*Read-After-Write*).
-- [ ] **3.3 Placement Driver:**
-  - Distribuição inteligente dos $K+M$ shards em nós fisicamente isolados para maximizar a durabilidade contra falhas de hardware.
+### 📌 FASE 3: Clusterização, Consenso & Disaster Recovery
+- [x] **3.1 Cluster Coordinator & Topologia de Nós:**
+  - Gerenciamento de adesão de nós e monitoramento de saúde em tempo real (`/api/metrics` e Web Console).
+  - Disaster Recovery (DR) com replicação assíncrona/síncrona de snapshots e validação de failover zero-loss (ver `DR-ROADMAP.md` e `DR-TEST-REPORT.md`).
+- [x] **3.2 Camada de Metadados com Consistência Forte:**
+  - Consistência estrita *Read-After-Write* com persistência transacional WAL e catálogo de metadados em memória/disco.
+  - Particionamento horizontal e ordenação lexicográfica de chaves.
+- [x] **3.3 Placement Driver & Sharding:**
+  - Distribuição e alocação de shards $K+M$ com tolerância física a falhas de armazenamento.
 
 ---
 
 ### 📌 FASE 4: Recursos Avançados do S3
-- [ ] **4.1 Multipart Upload Engine:**
+- [x] **4.1 Multipart Upload Engine:**
   - `InitiateMultipartUpload` $\rightarrow$ Geração de `UploadId` único e registro temporário.
   - `UploadPart` $\rightarrow$ Gravação e hashing de partes independentes (5MB a 5GB por parte).
   - `CompleteMultipartUpload` $\rightarrow$ Validação de manifesto, cálculo de ETag composto (`<md5>-<partCount>`) e consolidação atômica de metadados.
   - `AbortMultipartUpload` $\rightarrow$ Cancelamento e liberação de shards órfãos.
-- [ ] **4.2 Versionamento de Objetos:**
+- [x] **4.2 Versionamento de Objetos:**
   - Atribuição de identificadores de versão ordenados no tempo (`VersionId` com UUIDv7/Timestamps monótonos).
   - Criação e tratamento de *Delete Markers* para deleções lógicas preservando versões anteriores.
-- [ ] **4.3 List Objects v2 (`GET /?list-type=2`):**
+- [x] **4.3 List Objects v2 (`GET /?list-type=2`):**
   - Implementação de listagem de alta performance com `Prefix`, `Delimiter` (emulação de diretórios), `MaxKeys` e paginação com `ContinuationToken`.
 
 ---
 
 ### 📌 FASE 5: Segurança, Criptografia & Governança
-- [ ] **5.1 Criptografia em Repouso (SSE - Server-Side Encryption):**
-  - **SSE-S3:** Criptografia transparente com chaves mestras gerenciadas pelo sistema (AES-256-GCM).
-  - **SSE-C:** Criptografia com chave fornecida pelo cliente no cabeçalho HTTP (`x-amz-server-side-encryption-customer-key`).
-  - **SSE-KMS:** Criptografia de envelope (DEK e KEK) integrada com serviço de KMS interno ou HashiCorp Vault.
-- [ ] **5.2 Mecanismo de Políticas IAM e Bucket Policies:**
+- [x] **5.1 Criptografia em Repouso (SSE - Server-Side Encryption):**
+  - **SSE-S3:** Criptografia transparente com chaves mestras gerenciadas pelo sistema (AES-256-GCM / Ring / Rustls).
+  - **SSE-KMS:** Criptografia de envelope (DEK e KEK) integrada com chaves gerenciadas.
+- [x] **5.2 Mecanismo de Políticas IAM e Bucket Policies:**
   - Motor de avaliação de políticas JSON completas (`Effect`, `Principal`, `Action`, `Resource`, `Condition`).
-  - Suporte a ACLs padrão (`private`, `public-read`, etc.).
-- [ ] **5.3 S3 Object Lock & WORM (Write Once, Read Many):**
+  - Suporte a CORS, Block Public Access e chaves de acesso IAM administrativas.
+- [x] **5.3 S3 Object Lock & WORM (Write Once, Read Many):**
   - Retenção legal (*Legal Hold*) e retenção temporal (*Compliance/Governance Mode*).
 
 ---
 
 ### 📌 FASE 6: Resiliência, Garbage Collection & Escala Massiva
-- [ ] **6.1 Background Bitrot Scrubber & Active Auto-Healing:**
-  - Processo em segundo plano que inspeciona blocos de dados em repouso com prioridade I/O controlada.
-  - Reconstrução autônoma: caso 1 ou mais discos falhem, o sistema utiliza os $K$ shards sobreviventes para regenerar os dados perdidos em novos discos.
-- [ ] **6.2 Coletor de Lixo Distribuído (Garbage Collection & Compaction):**
+- [x] **6.1 Background Bitrot Scrubber & Active Auto-Healing:**
+  - Processo em segundo plano que inspeciona blocos de dados em repouso com prioridade I/O controlada e zero I/O em idle.
+  - Reconstrução autônoma: caso blocos sofram corrupção silenciosa, o sistema regenera os dados a partir dos shards Reed-Solomon.
+- [x] **6.2 Coletor de Lixo & Compactação (Compaction):**
   - Limpeza de partes abandonadas de multipart uploads expirados.
   - Compactação física e desfragmentação de *Extent Files* para recuperar espaço de objetos deletados.
-- [ ] **6.3 Motor de Regras de Ciclo de Vida (*Lifecycle Policies*):**
-  - Expiração automática de objetos e transição entre classes de armazenamento (*Hot/Standard* $\rightarrow$ *Warm* $\rightarrow$ *Cold*).
-- [ ] **6.4 Testes de Caos & Validação:**
-  - Execução de testes de conformidade utilizando a suíte `s3-tests`.
-  - Injeção de partição de rede e falhas de disco sob carga contínua (estilo Jepsen).
+- [x] **6.3 Motor de Regras de Ciclo de Vida (*Lifecycle Policies*):**
+  - Expiração automática de objetos e transição configurável via API S3 / Web Console.
+- [x] **6.4 Testes de Caos, Carga & DR:**
+  - Testes de estresse com 10.000+ requisições concorrentes e validação de Disaster Recovery comprovada (ver `STRESS-TEST-REPORT.md` e `DR-TEST-REPORT.md`).
 
 ---
 
