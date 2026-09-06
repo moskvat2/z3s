@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart TD
-    Browser["Navegador Web (Desktop / Mobile)"] -->|Acessa http://servidor:9000/console/| Router["Z3S Gateway Router"]
+    Browser["Navegador Web (Desktop / Mobile)"] -->|"Acessa http://servidor:9000/console/"| Router["Z3S Gateway Router"]
     
     subgraph EmbeddedUI["Frontend Embutido no Binário Rust (Zero Dependência Externa)"]
         Router --> Static["Embedded Assets (HTML5 / CSS3 / Vanilla JS / Tailwind / Icons)"]
@@ -21,7 +21,7 @@ flowchart TD
         SPA --> UIViews["Visual Views (Buckets, Explorer, Properties, Permissions, Dashboard)"]
     end
 
-    ClientCore -->|Chamadas REST S3 Autenticadas| S3API["Z3S S3 API Handlers (Porta 9000)"]
+    ClientCore -->|"Chamadas REST S3 Autenticadas"| S3API["Z3S S3 API Handlers (Porta 9000)"]
 ```
 
 ### Características Técnicas do Frontend:

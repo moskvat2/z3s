@@ -38,8 +38,8 @@ flowchart TD
     Clients --> Gateway
     Gateway --> Governance
     Governance --> StorageCore
-    EventDispatcher -.->|Webhooks / Kafka / Redis| ExternalQueues["Filas Externas & Webhooks"]
-    ReplicationWorker -.->|gRPC Stream (TLS)| RemoteCluster["Cluster Z3S Secundário (DR / Multi-Region)"]
+    EventDispatcher -.->|"Webhooks / Kafka / Redis"| ExternalQueues["Filas Externas & Webhooks"]
+    ReplicationWorker -.->|"gRPC Stream (TLS)"| RemoteCluster["Cluster Z3S Secundário (DR / Multi-Region)"]
 ```
 
 ---

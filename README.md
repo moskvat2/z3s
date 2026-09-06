@@ -61,7 +61,7 @@ Ao contrário de sistemas legados que sofrem com pausas de Garbage Collection (G
 
 ```mermaid
 flowchart TD
-    Clients["Aplicações / SDKs / AWS CLI / Web Browser"] -->|HTTP/REST (AWS SigV4) - Porta 9000| Gateway["Z3S S3 Gateway (Tokio / Hyper / Axum)"]
+    Clients["Aplicações / SDKs / AWS CLI / Web Browser"] -->|"HTTP/REST (AWS SigV4) - Porta 9000"| Gateway["Z3S S3 Gateway (Tokio / Hyper / Axum)"]
 
     subgraph GatewayCore["Gateway & Segurança"]
         Gateway --> Auth["Auth & IAM Engine (SigV4 / Policies / CORS)"]
@@ -77,8 +77,8 @@ flowchart TD
     end
 
     subgraph PhysicalDisks["Camada Física de Armazenamento"]
-        ExtentEngine --> E1[("Extent Files (.z3s)")]
-        ExtentEngine --> E2[("Index / Shards (BLAKE3)")]
+        ExtentEngine --> E1["Extent Files (.z3s)"]
+        ExtentEngine --> E2["Index / Shards (BLAKE3)"]
         ExtentEngine --> Scrubber["Background Bitrot Scrubber & Auto-Healing"]
     end
 ```

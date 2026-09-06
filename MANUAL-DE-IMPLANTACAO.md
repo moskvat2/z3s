@@ -30,7 +30,7 @@ O **Z3S** é um servidor de armazenamento de objetos compatível com a API AWS S
 
 ```mermaid
 flowchart TD
-    Client["Aplicações / AWS CLI / SDKs (Boto3, Go, Java)"] -->|HTTP / AWS SigV4 (Porta 9000)| GW["Z3S S3 Gateway"]
+    Client["Aplicações / AWS CLI / SDKs (Boto3, Go, Java)"] -->|"HTTP / AWS SigV4 (Porta 9000)"| GW["Z3S S3 Gateway"]
     
     subgraph CoreEngine["Z3S Core Engine"]
         GW --> Auth["Autenticação & Políticas IAM"]
@@ -41,11 +41,11 @@ flowchart TD
     end
 
     subgraph StorageLayer["Camada de Armazenamento Físico"]
-        Storage --> D1[("Disco 1 / Shards")]
-        Storage --> D2[("Disco 2 / Shards")]
-        Storage --> D3[("Disco 3 / Paridade")]
-        Storage --> D4[("Disco 4 / Paridade")]
-        Storage --> WAL[("Write-Ahead Log (WAL)")]
+        Storage --> D1["Disco 1 / Shards"]
+        Storage --> D2["Disco 2 / Shards"]
+        Storage --> D3["Disco 3 / Paridade"]
+        Storage --> D4["Disco 4 / Paridade"]
+        Storage --> WAL["Write-Ahead Log (WAL)"]
     end
 ```
 
