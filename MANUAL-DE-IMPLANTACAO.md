@@ -146,20 +146,37 @@ z3s-server --version
 ```
 
 ### 4.2. Opção B: Compilando a partir do Código-Fonte
-Caso deseje compilar diretamente no servidor alvo:
-```bash
-# Instalar Rust e dependências de build (no Alpine):
-apk add --no-cache cargo rust build-base git
+Caso deseje compilar diretamente no servidor alvo, certifique-se de utilizar o **Rust 1.80.0 ou superior (versão estável mais recente)**.
 
-# Clonar o repositório
-git clone https://github.com/seu-org/z3s.git /opt/z3s
+> [!IMPORTANT]
+> **Atenção à versão do Rust:** Evite utilizar pacotes antigos de repositórios de distribuições (como `apt` ou versões antigas do Alpine) que contenham Cargo <= 1.75. Dependências modernas do ecossistema Rust exigem suporte à edição 2024 (Rust 1.80+). Sempre utilize o `rustup`.
+
+```bash
+# 1. Instalar dependências básicas de compilação
+# No Ubuntu/Debian:
+apt update && apt install -y build-essential git curl pkg-config libssl-dev
+
+# No Alpine Linux:
+apk add --no-cache build-base git curl
+
+# 2. Instalar / Atualizar o Rust Toolchain Oficial (Rust 1.80+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustup update stable
+
+# 3. Validar a versão do Cargo (deve ser >= 1.80)
+cargo --version
+
+# 4. Clonar o repositório
+git clone https://github.com/moskvat2/z3s.git /opt/z3s
 cd /opt/z3s
 
-# Compilar em modo release com todas as otimizações
+# 5. Compilar em modo release com otimizações
 cargo build --release --bin z3s-server
 
-# Copiar executável
+# 6. Instalar o binário no PATH
 cp target/release/z3s-server /usr/local/bin/z3s-server
+chmod +x /usr/local/bin/z3s-server
 ```
 
 ### 4.3. Estrutura Padrão de Diretórios
@@ -436,6 +453,7 @@ tar -czf /backup/z3s-metadata-$(date +%Y%m%d).tar.gz /mnt/dados/z3s-data/metadat
 
 | Sintoma | Causa Provável | Solução |
 | :--- | :--- | :--- |
+| `feature edition2024 is required` / `failed to parse manifest at clap_lex` | Compilador Rust/Cargo desatualizado (ex.: Cargo <= 1.75). O Z3S e dependências exigem Rust 1.80+. | Executar `rustup update stable` no servidor de compilação ou instalar o toolchain estável via `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh`. |
 | `Connection Refused` na porta 9000 | O serviço `z3s-server` não está em execução ou firewall está bloqueando. | Verificar `rc-service z3s status` ou `systemctl status z3s`. Checar `iptables -L -n` ou `nftables`. |
 | `SignatureDoesNotMatch` | A chave de acesso/segredo informada pelo cliente difere do servidor ou o relógio do sistema está desincronizado. | Sincronizar relógio com NTP (`chrony` ou `ntpd`). Verificar credenciais no cliente. |
 | `Too many open files` | Limite de descritores de arquivos (`nofile`) insuficiente no sistema operacional. | Configurar `ulimit -n 65535` no `/etc/security/limits.conf` e reiniciar o serviço. |

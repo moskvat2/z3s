@@ -138,7 +138,7 @@ O Z3S foi submetido a testes agressivos de estresse e concorrência massiva:
 ## ⚡ Início Rápido (Quickstart)
 
 ### Pré-requisitos
-- Compilador **Rust 1.75+** e `cargo`.
+- Compilador **Rust 1.80.0+** (`cargo`) — execute `rustup update stable` para garantir a versão mais recente.
 - Linux (x86_64 / ARM64) ou macOS.
 
 ### 1. Clonar o Repositório
