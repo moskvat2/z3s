@@ -149,34 +149,71 @@ z3s-server --version
 Caso deseje compilar diretamente no servidor alvo, certifique-se de utilizar o **Rust 1.80.0 ou superior (versão estável mais recente)**.
 
 > [!IMPORTANT]
-> **Atenção à versão do Rust:** Evite utilizar pacotes antigos de repositórios de distribuições (como `apt` ou versões antigas do Alpine) que contenham Cargo <= 1.75. Dependências modernas do ecossistema Rust exigem suporte à edição 2024 (Rust 1.80+). Sempre utilize o `rustup`.
+> **Atenção à versão do Rust:** Evite utilizar pacotes antigos de repositórios de distribuições (como `apt` ou versões antigas do Alpine) que contenham Cargo <= 1.75. Dependências modernas do ecossistema Rust (como `clap_lex` e novos parsers) utilizam a especificação da edição 2024 (Rust 1.80+). Sempre instale e gerencie o compilador via **`rustup`**.
+
+#### 1. Instalar as Ferramentas de Compilação do Sistema Operacional:
+
+- **Ubuntu / Debian / Pop!_OS / Linux Mint:**
+  ```bash
+  sudo apt update && sudo apt install -y build-essential git curl pkg-config libssl-dev
+  ```
+
+- **Alpine Linux:**
+  ```bash
+  apk add --no-cache build-base git curl pkgconfig openssl-dev
+  ```
+
+- **RHEL / Rocky Linux / AlmaLinux / Fedora / CentOS Stream:**
+  ```bash
+  sudo dnf groupinstall -y "Development Tools" && sudo dnf install -y git curl pkgconfig openssl-devel
+  ```
+
+- **Arch Linux / Manjaro:**
+  ```bash
+  sudo pacman -Syu --noconfirm base-devel git curl pkgconf openssl
+  ```
+
+---
+
+#### 2. Instalar / Atualizar o Rust Toolchain Oficial (Rust 1.80+):
+
+Se você já possui o `rustup`:
+```bash
+rustup update stable
+rustup default stable
+```
+
+Se estiver instalando pela primeira vez ou removendo a versão defasada do sistema operacional:
+```bash
+# 1. Baixar e instalar o instalador oficial rustup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# 2. Carregar o ambiente no terminal atual
+source "$HOME/.cargo/env"
+
+# 3. Validar que a versão do Cargo é 1.80+
+cargo --version
+rustc --version
+```
+
+---
+
+#### 3. Clonar e Compilar o Projeto:
 
 ```bash
-# 1. Instalar dependências básicas de compilação
-# No Ubuntu/Debian:
-apt update && apt install -y build-essential git curl pkg-config libssl-dev
-
-# No Alpine Linux:
-apk add --no-cache build-base git curl
-
-# 2. Instalar / Atualizar o Rust Toolchain Oficial (Rust 1.80+)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup update stable
-
-# 3. Validar a versão do Cargo (deve ser >= 1.80)
-cargo --version
-
-# 4. Clonar o repositório
+# 1. Clonar o repositório oficial
 git clone https://github.com/moskvat2/z3s.git /opt/z3s
 cd /opt/z3s
 
-# 5. Compilar em modo release com otimizações
+# 2. Compilar em modo release com otimizações máximas (LTO + SIMD)
 cargo build --release --bin z3s-server
 
-# 6. Instalar o binário no PATH
-cp target/release/z3s-server /usr/local/bin/z3s-server
-chmod +x /usr/local/bin/z3s-server
+# 3. Instalar o binário no PATH global do sistema
+sudo cp target/release/z3s-server /usr/local/bin/z3s-server
+sudo chmod +x /usr/local/bin/z3s-server
+
+# 4. Validar execução
+z3s-server --version
 ```
 
 ### 4.3. Estrutura Padrão de Diretórios
