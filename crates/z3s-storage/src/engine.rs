@@ -216,6 +216,11 @@ impl StorageEngine {
         self.index.all_locations()
     }
 
+    /// Retorna o caminho do diretório raiz do Storage
+    pub fn root_dir(&self) -> &std::path::Path {
+        &self.root_dir
+    }
+
     /// Compacta todos os extents selados, descartando blocos de shards deletados e recuperando espaço em disco
     pub fn compact_sealed_extents(&self) -> Result<crate::compactor::CompactionReport, StorageError> {
         let mut report = crate::compactor::CompactionReport::default();
@@ -261,6 +266,20 @@ impl StorageEngine {
                 let _ = std::fs::remove_file(&old_path);
                 report.extents_reclaimed += 1;
                 report.bytes_reclaimed += old_file_len;
+                continue;
+            }
+
+            // Abre o extent para escanear os blocos físicos gravados
+            let mut ext_file = match ExtentFile::open(&old_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let physical_blocks = ext_file.scan_block_headers().unwrap_or_default();
+            drop(ext_file);
+
+            // Se todos os blocos gravados continuam vivos, NÃO há fragmentação/lixo.
+            // Pula a compactação deste extent para economizar 100% de I/O em disco!
+            if !physical_blocks.is_empty() && live_shards.len() == physical_blocks.len() {
                 continue;
             }
 
@@ -343,8 +362,8 @@ mod tests {
     #[test]
     fn test_storage_extent_compaction_reclaims_space() {
         let temp_dir = tempfile::tempdir().unwrap();
-        // Cria engine com capacidade pequena de extent para forçar criação de extents selados
-        let engine = Arc::new(StorageEngine::open(temp_dir.path(), 8192).unwrap());
+        // Cria engine com capacidade de 15KB para acomodar shards 1 e 2 no primeiro extent e forçar selamento no 3
+        let engine = Arc::new(StorageEngine::open(temp_dir.path(), 15000).unwrap());
 
         let shard_1 = Uuid::new_v4();
         let shard_2 = Uuid::new_v4();

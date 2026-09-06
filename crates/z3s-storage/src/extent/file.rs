@@ -145,6 +145,38 @@ impl ExtentFile {
 
         Ok((block_header, payload))
     }
+
+    /// Escaneia rapidamente todos os cabeçalhos de bloco do Extent sem ler os payloads (zero-copy header scan)
+    pub fn scan_block_headers(&mut self) -> Result<Vec<BlockHeader>, ExtentError> {
+        let mut headers = Vec::new();
+        let mut offset = EXTENT_HEADER_SIZE as u64;
+        let file_len = self.file.metadata()?.len();
+
+        let mut header_buf = [0u8; BLOCK_HEADER_SIZE];
+        while offset + BLOCK_HEADER_SIZE as u64 <= file_len {
+            self.file.seek(SeekFrom::Start(offset))?;
+            if self.file.read_exact(&mut header_buf).is_err() {
+                break;
+            }
+
+            match BlockHeader::deserialize(&header_buf, offset) {
+                Ok(header) => {
+                    let payload_len = header.payload_length;
+                    let total_block_size = BLOCK_HEADER_SIZE as u64 + payload_len;
+                    let padding_needed = (SECTOR_ALIGNMENT as u64 - (total_block_size % SECTOR_ALIGNMENT as u64)) % SECTOR_ALIGNMENT as u64;
+                    let next_offset = offset + total_block_size + padding_needed;
+                    headers.push(header);
+                    offset = next_offset;
+                }
+                Err(_) => {
+                    // Fim dos blocos válidos ou padding final
+                    break;
+                }
+            }
+        }
+
+        Ok(headers)
+    }
 }
 
 #[cfg(test)]

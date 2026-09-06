@@ -20,6 +20,13 @@ impl Credentials {
 /// Provedor de credenciais thread-safe
 pub trait CredentialsProvider: Send + Sync {
     fn get_credentials(&self, access_key_id: &str) -> Option<Credentials>;
+    fn list_keys(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn register_key(&self, _access_key_id: &str, _secret_access_key: &str) {}
+    fn delete_key(&self, _access_key_id: &str) -> bool {
+        false
+    }
 }
 
 /// Armazenamento em memória de credenciais para autenticação de clientes
@@ -38,6 +45,21 @@ impl InMemoryCredentialsStore {
         let mut map = self.store.write().unwrap();
         map.insert(access_key_id.into(), secret_access_key.into());
     }
+
+    pub fn list_keys(&self) -> Vec<String> {
+        let map = self.store.read().unwrap();
+        map.keys().cloned().collect()
+    }
+
+    pub fn delete(&self, access_key_id: &str) -> bool {
+        let mut map = self.store.write().unwrap();
+        map.remove(access_key_id).is_some()
+    }
+
+    pub fn has_key(&self, access_key_id: &str) -> bool {
+        let map = self.store.read().unwrap();
+        map.contains_key(access_key_id)
+    }
 }
 
 impl CredentialsProvider for InMemoryCredentialsStore {
@@ -47,6 +69,19 @@ impl CredentialsProvider for InMemoryCredentialsStore {
             access_key_id: access_key_id.to_string(),
             secret_access_key: secret.clone(),
         })
+    }
+
+    fn list_keys(&self) -> Vec<String> {
+        let map = self.store.read().unwrap();
+        map.keys().cloned().collect()
+    }
+
+    fn register_key(&self, access_key_id: &str, secret_access_key: &str) {
+        self.register(access_key_id, secret_access_key);
+    }
+
+    fn delete_key(&self, access_key_id: &str) -> bool {
+        self.delete(access_key_id)
     }
 }
 

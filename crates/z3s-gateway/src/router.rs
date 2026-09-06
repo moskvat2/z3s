@@ -16,6 +16,8 @@ pub enum S3Action {
     PutBucketPolicy { bucket: String },
     DeleteBucketPolicy { bucket: String },
     GetBucketCors { bucket: String },
+    PutBucketCors { bucket: String },
+    DeleteBucketCors { bucket: String },
     GetBucketLifecycle { bucket: String },
     PutBucketLifecycle { bucket: String },
     DeleteBucketLifecycle { bucket: String },
@@ -100,6 +102,11 @@ impl S3Router {
                         bucket,
                     });
                 }
+                if query.map_or(false, |q| Self::has_query_flag(q, "cors")) {
+                    return Some(S3Action::PutBucketCors {
+                        bucket,
+                    });
+                }
                 if query.map_or(false, |q| Self::has_query_flag(q, "lifecycle") || Self::has_query_flag(q, "lifecycleConfiguration")) {
                     return Some(S3Action::PutBucketLifecycle {
                         bucket,
@@ -118,6 +125,11 @@ impl S3Router {
                 }
                 if query.map_or(false, |q| Self::has_query_flag(q, "policy")) {
                     return Some(S3Action::DeleteBucketPolicy {
+                        bucket,
+                    });
+                }
+                if query.map_or(false, |q| Self::has_query_flag(q, "cors")) {
+                    return Some(S3Action::DeleteBucketCors {
                         bucket,
                     });
                 }
