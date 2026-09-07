@@ -111,10 +111,10 @@ function App() {
 // 1. AWS Sign-In View (Authentic AWS Login Screen)
 // ----------------------------------------------------------------------
 function AwsSignInView({ onLogin }) {
-  const [accessKey, setAccessKey] = useState("Z3SACCESSKEYEXAMPLE");
-  const [secretKey, setSecretKey] = useState("Z3SSECRETKEYEXAMPLE1234567890ABCDEF");
+  const [accessKey, setAccessKey] = useState("");
+  const [secretKey, setSecretKey] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
+  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -171,7 +171,7 @@ function AwsSignInView({ onLogin }) {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-[#16191f] uppercase tracking-wider mb-1.5">
                 Access Key ID
@@ -182,7 +182,8 @@ function AwsSignInView({ onLogin }) {
                 onChange={e => setAccessKey(e.target.value)}
                 required
                 autoFocus
-                placeholder="ex: Z3SACCESSKEYEXAMPLE"
+                autoComplete="off"
+                placeholder="Informe seu Access Key ID"
                 className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] text-sm text-[#16191f] font-mono transition"
               />
             </div>
@@ -205,7 +206,8 @@ function AwsSignInView({ onLogin }) {
                 value={secretKey}
                 onChange={e => setSecretKey(e.target.value)}
                 required
-                placeholder="••••••••••••••••"
+                autoComplete="new-password"
+                placeholder="Informe seu Secret Access Key"
                 className="w-full h-10 px-3 border border-[#aab7b8] rounded focus:outline-none focus:border-[#2563eb] focus:ring-1 focus:ring-[#2563eb] text-sm text-[#16191f] font-mono transition"
               />
             </div>
@@ -221,43 +223,6 @@ function AwsSignInView({ onLogin }) {
               <label htmlFor="rememberMe" className="ml-2 text-xs text-[#545b64] cursor-pointer">
                 Lembrar credenciais neste navegador
               </label>
-            </div>
-
-            {/* Quick credentials shortcuts for development */}
-            <div className="pt-1 pb-1">
-              <span className="text-[11px] text-[#545b64] block mb-1.5 font-semibold">Preenchimento Rápido (Dev):</span>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccessKey("Z3SACCESSKEYEXAMPLE");
-                    setSecretKey("Z3SSECRETKEYEXAMPLE1234567890ABCDEF");
-                  }}
-                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
-                >
-                  Z3S Root
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccessKey("admin");
-                    setSecretKey("admin123456");
-                  }}
-                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
-                >
-                  admin
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAccessKey("z3sadmin");
-                    setSecretKey("z3sadminsecretkey");
-                  }}
-                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-[11px] text-slate-700 font-mono transition"
-                >
-                  z3sadmin
-                </button>
-              </div>
             </div>
 
             <button

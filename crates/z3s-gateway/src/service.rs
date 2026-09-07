@@ -1741,14 +1741,7 @@ impl S3GatewayService {
         let src_manifest_key = format!("{}/{}", src_bucket, src_key);
         let src_manifest = {
             let map = self.objects.read().unwrap();
-            let list = map.get(&src_manifest_key)
-                .or_else(|| {
-                    if !src_key.ends_with('/') {
-                        map.get(&format!("{}/{}/", src_bucket, src_key))
-                    } else {
-                        map.get(&format!("{}/{}", src_bucket, src_key.trim_end_matches('/')))
-                    }
-                });
+            let list = map.get(&src_manifest_key);
 
             list.and_then(|versions| versions.iter().find(|v| v.metadata.is_latest).or_else(|| versions.first())).cloned()
         };
@@ -1873,17 +1866,7 @@ impl S3GatewayService {
         let manifest_key = format!("{}/{}", bucket, key);
         let manifest = {
             let map = self.objects.read().unwrap();
-            let list = map.get(&manifest_key)
-                .or_else(|| {
-                    if !key.ends_with('/') {
-                        map.get(&format!("{}/{}/", bucket, key))
-                    } else {
-                        map.get(&format!("{}/{}", bucket, key.trim_end_matches('/')))
-                    }
-                })
-                .or_else(|| {
-                    map.get(&format!("{}/{}_$folder$", bucket, key.trim_end_matches('/')))
-                });
+            let list = map.get(&manifest_key);
 
             match list {
                 Some(versions) => {
@@ -2175,17 +2158,7 @@ impl S3GatewayService {
         let manifest_key = format!("{}/{}", bucket, key);
         let manifest = {
             let map = self.objects.read().unwrap();
-            let list = map.get(&manifest_key)
-                .or_else(|| {
-                    if !key.ends_with('/') {
-                        map.get(&format!("{}/{}/", bucket, key))
-                    } else {
-                        map.get(&format!("{}/{}", bucket, key.trim_end_matches('/')))
-                    }
-                })
-                .or_else(|| {
-                    map.get(&format!("{}/{}_$folder$", bucket, key.trim_end_matches('/')))
-                });
+            let list = map.get(&manifest_key);
 
             match list {
                 Some(versions) => {
