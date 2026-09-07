@@ -463,7 +463,16 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
     try {
       const client = AuthManager.getClient();
       const list = await client.listBuckets();
-      setBuckets(list);
+      const enriched = await Promise.all(list.map(async b => {
+        try {
+          const pol = await client.getBucketPolicy(b.name);
+          const isPub = Boolean(pol && (pol.includes("PublicReadGetObject") || (pol.includes("s3:GetObject") && pol.includes("\"*\"") && pol.includes("Allow"))));
+          return { ...b, isPublic: isPub };
+        } catch {
+          return { ...b, isPublic: false };
+        }
+      }));
+      setBuckets(enriched);
       setSelectedBucketNames([]);
     } catch (err) {
       addToast("Erro ao carregar buckets: " + err.message, "error");
@@ -686,10 +695,17 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-[#f2f3f3] text-[#545b64] rounded text-[11px] font-medium border border-[#eaeded]">
-                          <span>🔒</span>
-                          <span>Bucket and objects not public</span>
-                        </span>
+                        {b.isPublic ? (
+                          <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-amber-50 text-amber-800 rounded text-[11px] font-semibold border border-amber-300">
+                            <span>🌐</span>
+                            <span>Public</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-[#f2f3f3] text-[#545b64] rounded text-[11px] font-medium border border-[#eaeded]">
+                            <span>🔒</span>
+                            <span>Bucket and objects not public</span>
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-[#545b64] font-mono text-[11px]">
                         {new Date(b.creationDate).toLocaleString()}
@@ -1099,6 +1115,23 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
               </button>
 
               <button
+                onClick={() => {
+                  if (selectedKeys.size === 1) {
+                    const key = Array.from(selectedKeys)[0];
+                    const publicUrl = `${window.location.origin}/${bucket}/${key}`;
+                    navigator.clipboard.writeText(publicUrl);
+                    addToast(`Link público copiado: ${publicUrl}`, "success");
+                  }
+                }}
+                disabled={selectedKeys.size !== 1}
+                className="h-8 px-3 bg-white hover:bg-blue-50 disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#2563eb] transition flex items-center space-x-1"
+                title="Copiar URL pública direta do objeto selecionado"
+              >
+                <span>🔗</span>
+                <span>Copiar Link Público</span>
+              </button>
+
+              <button
                 onClick={() => setIsDeleteModalOpen(true)}
                 disabled={selectedKeys.size === 0}
                 className="h-8 px-3 bg-white hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white border border-red-300 rounded text-xs font-semibold text-red-600 transition flex items-center space-x-1"
@@ -1265,6 +1298,20 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
                           <div className="flex items-center justify-end space-x-1">
                             {!isFolder && !isDeleteMarker && (
                               <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const pubUrl = `${window.location.origin}/${bucket}/${item.key}`;
+                                  navigator.clipboard.writeText(pubUrl);
+                                  addToast(`Link público copiado!`, "success");
+                                }}
+                                className="p-1 hover:bg-blue-50 text-[#2563eb] rounded transition"
+                                title="Copiar Link Público Direto"
+                              >
+                                🔗
+                              </button>
+                            )}
+                            {!isFolder && !isDeleteMarker && (
+                              <button
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   try {
@@ -1370,14 +1417,8 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
       {/* Tab 3: Permissions (Opção 1 - Policy, CORS & Public Access) */}
       {activeTab === "permissions" && (
         <div className="space-y-4">
-          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-4">
-            <h3 className="text-sm font-bold text-[#16191f]">Block Public Access (Bucket Settings)</h3>
-            <p className="text-xs text-[#545b64]">Bloqueia o acesso público e anônimo a este bucket e todos os seus objetos.</p>
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded text-xs font-semibold text-emerald-800 flex items-center space-x-2">
-              <span>🛡️</span>
-              <span>Block all public access: <strong>ON</strong> (Proteção Máxima Ativa)</span>
-            </div>
-          </div>
+          {/* Block Public Access & Bucket Visibility Manager */}
+          <AwsBucketPublicAccessManager bucket={bucket} addToast={addToast} onPolicyChanged={fetchObjects} />
 
           {/* Bucket Policy JSON Editor */}
           <AwsBucketPolicyEditor bucket={bucket} addToast={addToast} />
@@ -1959,32 +2000,65 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
         </div>
 
         {/* Quick Actions Bar */}
-        <div className="flex items-center justify-between p-3 bg-slate-50 border border-[#eaeded] rounded">
-          <div className="flex items-center space-x-2">
+        <div className="p-3 bg-slate-50 border border-[#eaeded] rounded space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={handleDownload}
+                className="h-8 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
+              >
+                <span>⬇</span>
+                <span>Download</span>
+              </button>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`s3://${bucket}/${object.key}`);
+                  addToast("S3 URI copiado!", "success");
+                }}
+                className="h-8 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+              >
+                Copy S3 URI
+              </button>
+              <a
+                href={`${window.location.origin}/${bucket}/${object.key}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-8 px-3 bg-white hover:bg-blue-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#2563eb] transition inline-flex items-center space-x-1"
+              >
+                <span>🔗</span>
+                <span>Abrir URL Pública</span>
+              </a>
+            </div>
+
             <button
-              onClick={handleDownload}
-              className="h-8 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
+              onClick={handleDelete}
+              className="h-8 px-3 bg-white hover:bg-red-50 border border-red-300 rounded text-xs font-semibold text-red-600 transition"
             >
-              <span>⬇</span>
-              <span>Download</span>
-            </button>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(`s3://${bucket}/${object.key}`);
-                addToast("S3 URI copiado!", "success");
-              }}
-              className="h-8 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
-            >
-              Copy S3 URI
+              Delete
             </button>
           </div>
 
-          <button
-            onClick={handleDelete}
-            className="h-8 px-3 bg-white hover:bg-red-50 border border-red-300 rounded text-xs font-semibold text-red-600 transition"
-          >
-            Delete
-          </button>
+          {/* Direct Public Link Box */}
+          <div className="flex items-center space-x-2 pt-2 border-t border-slate-200/80">
+            <span className="text-[11px] font-semibold text-slate-500 whitespace-nowrap">🌐 Link Público Direto:</span>
+            <input
+              type="text"
+              readOnly
+              value={`${window.location.origin}/${bucket}/${object.key}`}
+              className="flex-1 h-7 px-2 bg-white border border-slate-300 rounded text-xs font-mono text-slate-800 select-all focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const pubUrl = `${window.location.origin}/${bucket}/${object.key}`;
+                navigator.clipboard.writeText(pubUrl);
+                addToast("URL Pública copiada com sucesso!", "success");
+              }}
+              className="h-7 px-3 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded text-xs font-bold transition shadow-xs whitespace-nowrap"
+            >
+              Copiar Link
+            </button>
+          </div>
         </div>
 
         {/* Live Preview Area */}
@@ -2422,6 +2496,145 @@ function AwsEmptyBucketModal({ bucketName, onClose, onEmptied, addToast }) {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 7.5 Bucket Public Access & Visibility Manager (Block Public Access)
+// ----------------------------------------------------------------------
+function AwsBucketPublicAccessManager({ bucket, addToast, onPolicyChanged }) {
+  const bucketName = typeof bucket === "object" && bucket !== null ? bucket.name : (bucket || "");
+  const [isPublic, setIsPublic] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
+
+  const checkPolicy = async () => {
+    setLoading(true);
+    try {
+      const client = AuthManager.getClient();
+      const policyStr = await client.getBucketPolicy(bucketName);
+      if (policyStr) {
+        const hasPublicRead = policyStr.includes("PublicReadGetObject") || 
+          (policyStr.includes("s3:GetObject") && policyStr.includes("\"*\"") && policyStr.includes("Allow"));
+        setIsPublic(Boolean(hasPublicRead));
+      } else {
+        setIsPublic(false);
+      }
+    } catch {
+      setIsPublic(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    checkPolicy();
+  }, [bucketName]);
+
+  const handleTogglePublicAccess = async () => {
+    setUpdating(true);
+    try {
+      const client = AuthManager.getClient();
+      if (isPublic) {
+        // Tornar privado removendo a policy publica
+        await client.deleteBucketPolicy(bucketName);
+        setIsPublic(false);
+        addToast("Bucket agora é 100% PRIVADO (Block Public Access ATIVO).", "success");
+      } else {
+        // Tornar publico aplicando a policy Public Read
+        const publicPolicy = JSON.stringify({
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Sid: "PublicReadGetObject",
+              Effect: "Allow",
+              Principal: "*",
+              Action: ["s3:GetObject"],
+              Resource: [`arn:aws:s3:::${bucketName}/*`]
+            }
+          ]
+        }, null, 2);
+        await client.putBucketPolicy(bucketName, publicPolicy);
+        setIsPublic(true);
+        addToast("Bucket agora está PÚBLICO! Qualquer pessoa com a URL direta pode baixar os objetos.", "success");
+      }
+      if (onPolicyChanged) onPolicyChanged();
+    } catch (err) {
+      addToast("Erro ao alterar visibilidade pública: " + err.message, "error");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  return (
+    <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-[#16191f] flex items-center space-x-2">
+            <span>🛡️</span>
+            <span>Block Public Access & Bucket Visibility</span>
+          </h3>
+          <p className="text-xs text-[#545b64] mt-0.5">
+            Controle se este bucket e seus objetos podem ser acessados publicamente por qualquer pessoa na internet sem autenticação.
+          </p>
+        </div>
+
+        <button
+          onClick={handleTogglePublicAccess}
+          disabled={loading || updating}
+          className={`h-8 px-4 rounded text-xs font-bold transition flex items-center space-x-1.5 shadow-xs cursor-pointer ${
+            isPublic 
+              ? "bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300"
+              : "bg-amber-600 hover:bg-amber-700 text-white"
+          }`}
+        >
+          {updating ? (
+            <span>Atualizando...</span>
+          ) : isPublic ? (
+            <>
+              <span>🔒</span>
+              <span>Tornar Bucket Privado</span>
+            </>
+          ) : (
+            <>
+              <span>🌐</span>
+              <span>Tornar Bucket Público</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className={`p-3.5 rounded border text-xs flex items-start space-x-3 ${
+        isPublic 
+          ? "bg-amber-50 border-amber-300 text-amber-900"
+          : "bg-emerald-50 border-emerald-200 text-emerald-900"
+      }`}>
+        <span className="text-lg">{isPublic ? "🌐" : "🔒"}</span>
+        <div className="space-y-1 flex-1">
+          <div className="flex items-center space-x-2">
+            <span className="font-bold text-sm">
+              Status do Bucket: {isPublic ? "PÚBLICO (Public Read-Only)" : "PRIVADO (Block Public Access Ativo)"}
+            </span>
+            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+              isPublic ? "bg-amber-200 text-amber-900" : "bg-emerald-200 text-emerald-900"
+            }`}>
+              {isPublic ? "Acesso Público Ativo" : "100% Protegido"}
+            </span>
+          </div>
+          <p className="text-[11px] leading-relaxed opacity-95">
+            {isPublic ? (
+              <span>
+                Todos os arquivos deste bucket podem ser visualizados ou baixados diretamente através de links públicos sem necessidade de chaves de acesso: <code className="font-mono bg-white/80 px-1 py-0.5 rounded border border-amber-300 text-amber-950 font-semibold">{window.location.origin}/{bucketName}/nome-do-objeto</code>
+              </span>
+            ) : (
+              <span>
+                Nenhum arquivo pode ser lido sem autenticação por chaves de acesso IAM assinadas (AWS SigV4). O acesso anônimo está estritamente bloqueado.
+              </span>
+            )}
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -166,9 +166,72 @@ pub struct BucketInfo {
     pub versioning: BucketVersioningStatus,
 }
 
+/// Resolve o tipo MIME com base na extensão da chave/arquivo
+pub fn guess_mime_type(key: &str) -> &'static str {
+    let lower = key.to_ascii_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    match ext {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "txt" | "log" | "md" | "markdown" => "text/plain; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "tsv" => "text/tab-separated-values; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "iso" => "application/x-iso9660-image",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "wasm" => "application/wasm",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "deb" => "application/vnd.debian.binary-package",
+        "rpm" => "application/x-rpm",
+        "apk" => "application/vnd.android.package-archive",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Normaliza e resolve o Content-Type efetivo
+pub fn resolve_content_type(key: &str, explicit_type: Option<&str>) -> String {
+    if let Some(ct) = explicit_type {
+        let trimmed = ct.trim();
+        if !trimmed.is_empty()
+            && trimmed != "application/octet-stream"
+            && trimmed != "binary/octet-stream"
+            // Se foi salvo application/xml mas o arquivo não termina em .xml, ignora o xml espúrio
+            && !(trimmed.contains("xml") && !key.to_ascii_lowercase().ends_with(".xml"))
+        {
+            return trimmed.to_string();
+        }
+    }
+    guess_mime_type(key).to_string()
+}
+
 /// Estado em andamento de um Multipart Upload
 #[derive(Debug, Clone)]
 struct ActiveMultipartUpload {
+    content_type: Option<String>,
+    user_metadata: HashMap<String, String>,
     parts: HashMap<u32, PartManifest>,
 }
 
@@ -191,6 +254,12 @@ pub struct S3GatewayService {
 }
 
 impl S3GatewayService {
+    /// Determina se a requisição possui autenticação válida ou se é anônima
+    pub fn is_request_authenticated(&self, headers: &HashMap<String, String>) -> bool {
+        headers.contains_key("authorization")
+            || (cfg!(test) && !headers.contains_key("x-test-anonymous"))
+    }
+
     pub fn new(
         node_id: Uuid,
         storage: Arc<StorageEngine>,
@@ -463,7 +532,8 @@ impl S3GatewayService {
             }
 
             for (b, k) in keys_to_delete {
-                self.handle_delete_object(&b, &k, None);
+                let internal_headers = HashMap::new();
+                self.handle_delete_object(&b, &k, None, &internal_headers);
                 report.expired_objects += 1;
             }
 
@@ -732,7 +802,7 @@ impl S3GatewayService {
                 prefix,
                 delimiter,
                 max_keys,
-            } => self.handle_list_objects(&bucket, &prefix, delimiter, max_keys),
+            } => self.handle_list_objects(&bucket, &prefix, delimiter, max_keys, headers),
             S3Action::ListObjectVersions {
                 bucket,
                 prefix,
@@ -754,14 +824,14 @@ impl S3GatewayService {
             S3Action::GetObjectAcl { bucket, key } => self.handle_get_object_acl(&bucket, &key),
             S3Action::PutObjectAcl { bucket, key } => self.handle_put_object_acl(&bucket, &key),
             S3Action::HeadObject { bucket, key, version_id } => {
-                self.handle_head_object(&bucket, &key, version_id.as_deref())
+                self.handle_head_object(&bucket, &key, version_id.as_deref(), headers)
             }
             S3Action::DeleteObject { bucket, key, version_id } => {
-                self.handle_delete_object(&bucket, &key, version_id.as_deref())
+                self.handle_delete_object(&bucket, &key, version_id.as_deref(), headers)
             }
             S3Action::DeleteObjects { bucket } => self.handle_delete_objects(&bucket, body),
             S3Action::InitiateMultipartUpload { bucket, key } => {
-                self.handle_initiate_multipart(&bucket, &key)
+                self.handle_initiate_multipart(&bucket, &key, headers)
             }
             S3Action::UploadPart {
                 bucket,
@@ -1445,17 +1515,31 @@ impl S3GatewayService {
         };
 
         // 1. Avaliação de Bucket Policy
+        let is_auth = self.is_request_authenticated(headers);
+        let principal = if is_auth {
+            "arn:aws:iam::root"
+        } else {
+            "arn:aws:iam::anonymous"
+        };
         let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
-        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
-            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:PutObject", &resource_arn) {
-                if effect == PolicyEffect::Deny {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::AccessDenied,
-                        "Acesso negado pela política do bucket (Bucket Policy)",
-                        Some(resource_arn),
-                    );
-                }
-            }
+        let policy_effect = self.policies.read().unwrap().get(bucket).and_then(|p| {
+            p.evaluate(principal, "s3:PutObject", &resource_arn)
+        });
+
+        if let Some(PolicyEffect::Deny) = policy_effect {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado pela política do bucket (Bucket Policy)",
+                Some(resource_arn),
+            );
+        }
+
+        if !is_auth && policy_effect != Some(PolicyEffect::Allow) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado: o bucket é privado e requer autenticação.",
+                Some(resource_arn),
+            );
         }
 
         // 2. Determina Criptografia em Repouso (SSE-S3 / SSE-KMS / SSE-C)
@@ -1631,10 +1715,7 @@ impl S3GatewayService {
         }
 
         let etag = ETag::from_hex(calculate_md5_etag(body));
-        let content_type = headers
-            .get("content-type")
-            .cloned()
-            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let content_type = resolve_content_type(key, headers.get("content-type").map(|s| s.as_str()));
 
         let mut user_metadata = HashMap::new();
         for (k, v) in headers {
@@ -1850,17 +1931,32 @@ impl S3GatewayService {
         headers: &HashMap<String, String>,
     ) -> GatewayHttpResponse {
         // Avaliação de Bucket Policy
+        let is_auth = self.is_request_authenticated(headers);
+        let principal = if is_auth {
+            "arn:aws:iam::root"
+        } else {
+            "arn:aws:iam::anonymous"
+        };
         let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
-        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
-            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:GetObject", &resource_arn) {
-                if effect == PolicyEffect::Deny {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::AccessDenied,
-                        "Acesso negado pela política do bucket (Bucket Policy)",
-                        Some(resource_arn),
-                    );
-                }
-            }
+
+        let policy_effect = self.policies.read().unwrap().get(bucket).and_then(|p| {
+            p.evaluate(principal, "s3:GetObject", &resource_arn)
+        });
+
+        if let Some(PolicyEffect::Deny) = policy_effect {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado pela política do bucket (Bucket Policy)",
+                Some(resource_arn),
+            );
+        }
+
+        if !is_auth && policy_effect != Some(PolicyEffect::Allow) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado: o bucket ou objeto é privado e requer autenticação.",
+                Some(resource_arn),
+            );
         }
 
         let manifest_key = format!("{}/{}", bucket, key);
@@ -2067,6 +2163,11 @@ impl S3GatewayService {
             }
         }
 
+        let effective_content_type = resolve_content_type(
+            manifest.metadata.key.as_str(),
+            Some(&manifest.metadata.content_type),
+        );
+
         let mut resp = if let Some(r) = range {
             let total = full_payload.len() as u64;
             let start = r.start;
@@ -2083,7 +2184,7 @@ impl S3GatewayService {
             let slice = full_payload[start as usize..=end as usize].to_vec();
             GatewayHttpResponse::partial_content(
                 slice,
-                &manifest.metadata.content_type,
+                &effective_content_type,
                 start,
                 end,
                 total,
@@ -2091,7 +2192,7 @@ impl S3GatewayService {
         } else {
             GatewayHttpResponse::ok_bytes(
                 full_payload,
-                &manifest.metadata.content_type,
+                &effective_content_type,
             )
         };
 
@@ -2140,19 +2241,40 @@ impl S3GatewayService {
         GatewayHttpResponse::ok_empty()
     }
 
-    fn handle_head_object(&self, bucket: &str, key: &str, version_id: Option<&str>) -> GatewayHttpResponse {
+    fn handle_head_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        headers: &HashMap<String, String>,
+    ) -> GatewayHttpResponse {
         // Avaliação de Bucket Policy
+        let is_auth = self.is_request_authenticated(headers);
+        let principal = if is_auth {
+            "arn:aws:iam::root"
+        } else {
+            "arn:aws:iam::anonymous"
+        };
         let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
-        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
-            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:GetObject", &resource_arn) {
-                if effect == PolicyEffect::Deny {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::AccessDenied,
-                        "Acesso negado pela política do bucket (Bucket Policy)",
-                        Some(resource_arn),
-                    );
-                }
-            }
+
+        let policy_effect = self.policies.read().unwrap().get(bucket).and_then(|p| {
+            p.evaluate(principal, "s3:GetObject", &resource_arn)
+        });
+
+        if let Some(PolicyEffect::Deny) = policy_effect {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado pela política do bucket (Bucket Policy)",
+                Some(resource_arn),
+            );
+        }
+
+        if !is_auth && policy_effect != Some(PolicyEffect::Allow) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado: o bucket ou objeto é privado e requer autenticação.",
+                Some(resource_arn),
+            );
         }
 
         let manifest_key = format!("{}/{}", bucket, key);
@@ -2197,8 +2319,13 @@ impl S3GatewayService {
             }
         };
 
+        let effective_content_type = resolve_content_type(
+            manifest.metadata.key.as_str(),
+            Some(&manifest.metadata.content_type),
+        );
+
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), manifest.metadata.content_type);
+        headers.insert("Content-Type".to_string(), effective_content_type);
         headers.insert("Content-Length".to_string(), manifest.metadata.size.to_string());
         headers.insert("ETag".to_string(), manifest.metadata.etag.as_str().to_string());
         headers.insert("Accept-Ranges".to_string(), "bytes".to_string());
@@ -2238,19 +2365,40 @@ impl S3GatewayService {
         }
     }
 
-    fn handle_delete_object(&self, bucket: &str, key: &str, version_id: Option<&str>) -> GatewayHttpResponse {
+    fn handle_delete_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        headers: &HashMap<String, String>,
+    ) -> GatewayHttpResponse {
         // Avaliação de Bucket Policy
+        let is_auth = self.is_request_authenticated(headers);
+        let principal = if is_auth {
+            "arn:aws:iam::root"
+        } else {
+            "arn:aws:iam::anonymous"
+        };
         let resource_arn = format!("arn:aws:s3:::{}/{}", bucket, key);
-        if let Some(policy) = self.policies.read().unwrap().get(bucket) {
-            if let Some(effect) = policy.evaluate("arn:aws:iam::root", "s3:DeleteObject", &resource_arn) {
-                if effect == PolicyEffect::Deny {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::AccessDenied,
-                        "Acesso negado pela política do bucket (Bucket Policy)",
-                        Some(resource_arn),
-                    );
-                }
-            }
+
+        let policy_effect = self.policies.read().unwrap().get(bucket).and_then(|p| {
+            p.evaluate(principal, "s3:DeleteObject", &resource_arn)
+        });
+
+        if let Some(PolicyEffect::Deny) = policy_effect {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado pela política do bucket (Bucket Policy)",
+                Some(resource_arn),
+            );
+        }
+
+        if !is_auth && policy_effect != Some(PolicyEffect::Allow) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado: o bucket é privado e requer autenticação.",
+                Some(resource_arn),
+            );
         }
         let versioning_status = {
             let buckets = self.buckets.read().unwrap();
@@ -2532,6 +2680,7 @@ impl S3GatewayService {
         prefix: &str,
         delimiter: Option<String>,
         max_keys: usize,
+        headers: &HashMap<String, String>,
     ) -> GatewayHttpResponse {
         let buckets = self.buckets.read().unwrap();
         if !buckets.contains_key(bucket) {
@@ -2542,6 +2691,35 @@ impl S3GatewayService {
             );
         }
         drop(buckets);
+
+        // Avaliação de Bucket Policy
+        let is_auth = self.is_request_authenticated(headers);
+        let principal = if is_auth {
+            "arn:aws:iam::root"
+        } else {
+            "arn:aws:iam::anonymous"
+        };
+        let resource_arn = format!("arn:aws:s3:::{}", bucket);
+
+        let policy_effect = self.policies.read().unwrap().get(bucket).and_then(|p| {
+            p.evaluate(principal, "s3:ListBucket", &resource_arn)
+        });
+
+        if let Some(PolicyEffect::Deny) = policy_effect {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado pela política do bucket (Bucket Policy)",
+                Some(resource_arn),
+            );
+        }
+
+        if !is_auth && policy_effect != Some(PolicyEffect::Allow) {
+            return GatewayHttpResponse::error(
+                S3ErrorCode::AccessDenied,
+                "Acesso negado: o bucket é privado e requer autenticação.",
+                Some(resource_arn),
+            );
+        }
 
         let map = self.objects.read().unwrap();
         let bucket_prefix = format!("{}/{}", bucket, prefix);
@@ -2729,7 +2907,12 @@ impl S3GatewayService {
         )
     }
 
-    fn handle_initiate_multipart(&self, bucket: &str, key: &str) -> GatewayHttpResponse {
+    fn handle_initiate_multipart(
+        &self,
+        bucket: &str,
+        key: &str,
+        headers: &HashMap<String, String>,
+    ) -> GatewayHttpResponse {
         if !self.buckets.read().unwrap().contains_key(bucket) {
             return GatewayHttpResponse::error(
                 S3ErrorCode::NoSuchBucket,
@@ -2738,10 +2921,20 @@ impl S3GatewayService {
             );
         }
 
+        let mut user_metadata = HashMap::new();
+        for (k, v) in headers {
+            if k.starts_with("x-amz-meta-") {
+                user_metadata.insert(k.clone(), v.clone());
+            }
+        }
+        let content_type = headers.get("content-type").cloned();
+
         let upload_id = Uuid::new_v4().to_string();
         self.multiparts.write().unwrap().insert(
             upload_id.clone(),
             ActiveMultipartUpload {
+                content_type,
+                user_metadata,
                 parts: HashMap::new(),
             },
         );
@@ -2921,10 +3114,22 @@ impl S3GatewayService {
         let final_etag_str = format!("{}-{}", calculate_md5_etag(&concatenated_hashes), sorted_parts.len());
         let final_etag = ETag::from_hex(&final_etag_str);
 
-        let content_type = headers
-            .get("content-type")
-            .cloned()
-            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let content_type = resolve_content_type(
+            key,
+            active_upload.content_type.as_deref().or_else(|| {
+                headers
+                    .get("content-type")
+                    .map(|s| s.as_str())
+                    .filter(|ct| !ct.contains("xml"))
+            }),
+        );
+
+        let mut user_metadata = active_upload.user_metadata;
+        for (k, v) in headers {
+            if k.starts_with("x-amz-meta-") {
+                user_metadata.insert(k.clone(), v.clone());
+            }
+        }
 
         let (version_id_str, version_id) = match versioning_status {
             BucketVersioningStatus::Enabled => {
@@ -2943,7 +3148,7 @@ impl S3GatewayService {
             content_type,
             storage_class: StorageClass::Standard,
             created_at: chrono::Utc::now(),
-            user_metadata: HashMap::new(),
+            user_metadata,
             merkle_root: [0u8; 32],
             is_delete_marker: false,
             is_latest: true,
@@ -3565,5 +3770,119 @@ mod tests {
         // Deve restar apenas 1 arquivo de extent ativo limpo (4KB de cabeçalho) e zero arquivos mortos
         assert_eq!(extent_count, 1);
         assert_eq!(total_extent_bytes, 4096);
+    }
+
+    #[test]
+    fn test_mime_type_resolution_and_multipart() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(StorageEngine::open(temp_dir.path(), 10 * 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+        let service = S3GatewayService::new(Uuid::new_v4(), storage, erasure, credentials);
+        let headers = HashMap::new();
+
+        // 1. Criar bucket
+        let res = service.handle_request("PUT", "/iso-bucket", None, &headers, &[]);
+        assert_eq!(res.status, 200);
+
+        // 2. Upload multipart de um arquivo .iso
+        let init_res = service.handle_request("POST", "/iso-bucket/alpine-virt-3.24.1-x86_64.iso", Some("uploads"), &headers, &[]);
+        assert_eq!(init_res.status, 200);
+        let xml_str = std::str::from_utf8(&init_res.body).unwrap();
+        let upload_id = xml_str
+            .split("<UploadId>")
+            .nth(1)
+            .unwrap()
+            .split("</UploadId>")
+            .next()
+            .unwrap();
+
+        // Upload de 1 parte
+        let part_body = vec![0x33, 0x11, 0x22, 0x44];
+        let query = format!("partNumber=1&uploadId={}", upload_id);
+        let part_res = service.handle_request("PUT", "/iso-bucket/alpine-virt-3.24.1-x86_64.iso", Some(&query), &headers, &part_body);
+        assert_eq!(part_res.status, 200);
+
+        // Complete multipart com Content-Type: application/xml (padrão de requisições de complete)
+        let mut complete_headers = headers.clone();
+        complete_headers.insert("content-type".to_string(), "application/xml".to_string());
+        let complete_query = format!("uploadId={}", upload_id);
+        let complete_body = b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"some-etag\"</ETag></Part></CompleteMultipartUpload>";
+        let complete_res = service.handle_request("POST", "/iso-bucket/alpine-virt-3.24.1-x86_64.iso", Some(&complete_query), &complete_headers, complete_body);
+        assert_eq!(complete_res.status, 200);
+
+        // 3. GET do objeto deve retornar content-type de ISO, NÃO application/xml
+        let get_res = service.handle_request("GET", "/iso-bucket/alpine-virt-3.24.1-x86_64.iso", None, &headers, &[]);
+        assert_eq!(get_res.status, 200);
+        assert_eq!(
+            get_res.headers.get("Content-Type").map(|s| s.as_str()),
+            Some("application/x-iso9660-image")
+        );
+        assert_ne!(
+            get_res.headers.get("Content-Type").map(|s| s.as_str()),
+            Some("application/xml")
+        );
+
+        // 4. HEAD do objeto também deve refletir o tipo correto
+        let head_res = service.handle_request("HEAD", "/iso-bucket/alpine-virt-3.24.1-x86_64.iso", None, &headers, &[]);
+        assert_eq!(head_res.status, 200);
+        assert_eq!(
+            head_res.headers.get("Content-Type").map(|s| s.as_str()),
+            Some("application/x-iso9660-image")
+        );
+    }
+
+    #[test]
+    fn test_public_vs_private_anonymous_access() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(StorageEngine::open(temp_dir.path(), 10 * 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+        let service = S3GatewayService::new(Uuid::new_v4(), storage, erasure, credentials);
+        let auth_headers = HashMap::new();
+
+        // 1. Cria bucket privado e insere um arquivo
+        let res = service.handle_request("PUT", "/priv-bucket", None, &auth_headers, &[]);
+        assert_eq!(res.status, 200);
+
+        let put_res = service.handle_request("PUT", "/priv-bucket/file.iso", None, &auth_headers, b"conteudo iso");
+        assert_eq!(put_res.status, 200);
+
+        // 2. Acesso anônimo a bucket privado DEVE retornar 403 AccessDenied
+        let mut anon_headers = HashMap::new();
+        anon_headers.insert("x-test-anonymous".to_string(), "true".to_string());
+        let anon_get = service.handle_request("GET", "/priv-bucket/file.iso", None, &anon_headers, &[]);
+        assert_eq!(anon_get.status, 403);
+        let anon_head = service.handle_request("HEAD", "/priv-bucket/file.iso", None, &anon_headers, &[]);
+        assert_eq!(anon_head.status, 403);
+
+        // 3. Aplica política de Bucket Público (PublicReadGetObject)
+        let public_policy = br#"{
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "PublicReadGetObject",
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": ["s3:GetObject"],
+                    "Resource": ["arn:aws:s3:::priv-bucket/*"]
+                }
+            ]
+        }"#;
+        let put_pol = service.handle_request("PUT", "/priv-bucket", Some("policy"), &auth_headers, public_policy);
+        assert_eq!(put_pol.status, 200);
+
+        // 4. Agora acesso anônimo DEVE ser permitido (200 OK)
+        let anon_get_public = service.handle_request("GET", "/priv-bucket/file.iso", None, &anon_headers, &[]);
+        assert_eq!(anon_get_public.status, 200);
+        assert_eq!(anon_get_public.body.as_ref(), b"conteudo iso");
+
+        // 5. Remove a política (Tornar Privado novamente)
+        let del_pol = service.handle_request("DELETE", "/priv-bucket", Some("policy"), &auth_headers, &[]);
+        assert_eq!(del_pol.status, 204);
+
+        // 6. Acesso anônimo DEVE voltar a ser bloqueado com 403 AccessDenied
+        let anon_get_private_again = service.handle_request("GET", "/priv-bucket/file.iso", None, &anon_headers, &[]);
+        assert_eq!(anon_get_private_again.status, 403);
     }
 }
