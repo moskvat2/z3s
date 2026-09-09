@@ -294,6 +294,52 @@ impl SigV4Engine {
         Ok(())
     }
 
+    /// Constrói o cabeçalho `Authorization: AWS4-HMAC-SHA256 ...` para requisições de saída
+    pub fn generate_authorization_header(
+        access_key_id: &str,
+        secret_access_key: &str,
+        region: &str,
+        service: &str,
+        http_method: &str,
+        canonical_uri: &str,
+        canonical_query_string: &str,
+        headers: &BTreeMap<String, String>,
+        signed_headers: &[String],
+        payload_hash: &str,
+        timestamp: &str,
+        date: &str,
+    ) -> String {
+        let canonical_request = Self::build_canonical_request(
+            http_method,
+            canonical_uri,
+            canonical_query_string,
+            headers,
+            signed_headers,
+            payload_hash,
+        );
+
+        let string_to_sign = Self::build_string_to_sign(
+            timestamp,
+            date,
+            region,
+            service,
+            &canonical_request,
+        );
+
+        let signing_key = Self::derive_signing_key(secret_access_key, date, region, service);
+        let signature = Self::calculate_signature(&signing_key, &string_to_sign);
+
+        format!(
+            "AWS4-HMAC-SHA256 Credential={}/{}/{}/{}/aws4_request, SignedHeaders={}, Signature={}",
+            access_key_id,
+            date,
+            region,
+            service,
+            signed_headers.join(";"),
+            signature
+        )
+    }
+
     fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
         let mut mac = HmacSha256::new_from_slice(key).expect("HMAC pode aceitar chave de qualquer tamanho");
         mac.update(data);
@@ -403,5 +449,67 @@ mod tests {
             timestamp,
         );
         assert_eq!(verify_tampered, Err(SigV4Error::SignatureDoesNotMatch));
+    }
+
+    #[test]
+    fn test_generate_authorization_header_roundtrip() {
+        let store = InMemoryCredentialsStore::new();
+        let access_key = "REPLICATION_KEY";
+        let secret_key = "REPLICATION_SECRET_KEY_1234567890";
+        store.register(access_key, secret_key);
+
+        let date = "20260908";
+        let timestamp = "20260908T210000Z";
+        let region = "us-east-1";
+        let service = "s3";
+        let http_method = "PUT";
+        let canonical_uri = "/backup-bucket/data.bin";
+        let canonical_query_string = "";
+        let payload = b"payload de teste para replicacao";
+        let payload_hash = hex::encode(sha2::Sha256::digest(payload));
+
+        let mut headers = BTreeMap::new();
+        headers.insert("host".to_string(), "192.168.122.12:9000".to_string());
+        headers.insert("x-amz-content-sha256".to_string(), payload_hash.clone());
+        headers.insert("x-amz-date".to_string(), timestamp.to_string());
+        headers.insert("x-z3s-replication".to_string(), "true".to_string());
+
+        let signed_headers = vec![
+            "host".to_string(),
+            "x-amz-content-sha256".to_string(),
+            "x-amz-date".to_string(),
+            "x-z3s-replication".to_string(),
+        ];
+
+        let auth_header = SigV4Engine::generate_authorization_header(
+            access_key,
+            secret_key,
+            region,
+            service,
+            http_method,
+            canonical_uri,
+            canonical_query_string,
+            &headers,
+            &signed_headers,
+            &payload_hash,
+            timestamp,
+            date,
+        );
+
+        let mut parsed_auth = SigV4Engine::parse_authorization_header(&auth_header).unwrap();
+        parsed_auth.timestamp = timestamp.to_string();
+
+        let verify_result = SigV4Engine::verify(
+            &parsed_auth,
+            &store,
+            http_method,
+            canonical_uri,
+            canonical_query_string,
+            &headers,
+            &payload_hash,
+            timestamp,
+        );
+
+        assert!(verify_result.is_ok(), "A assinatura gerada deve ser verificada com sucesso");
     }
 }

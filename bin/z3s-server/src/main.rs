@@ -6,7 +6,7 @@ use tracing::info;
 use uuid::Uuid;
 use z3s_auth::credentials::InMemoryCredentialsStore;
 use z3s_erasure::ErasureEngine;
-use z3s_gateway::{HttpServer, S3GatewayService};
+use z3s_gateway::{HttpServer, ReplicationConfig, ReplicationEngine, S3GatewayService};
 use z3s_storage::{StorageEngine, DEFAULT_EXTENT_CAPACITY};
 
 #[derive(Parser, Debug)]
@@ -29,6 +29,18 @@ struct Cli {
 
     #[arg(long, default_value_t = 2, env = "Z3S_PARITY_SHARDS")]
     parity_shards: usize,
+
+    #[arg(long, env = "Z3S_PEER_ENDPOINT")]
+    peer_endpoint: Option<String>,
+
+    #[arg(long, env = "Z3S_PEER_ACCESS_KEY")]
+    peer_access_key: Option<String>,
+
+    #[arg(long, env = "Z3S_PEER_SECRET_KEY")]
+    peer_secret_key: Option<String>,
+
+    #[arg(long, default_value = "us-east-1", env = "Z3S_PEER_REGION")]
+    peer_region: String,
 }
 
 #[tokio::main]
@@ -73,6 +85,32 @@ async fn main() -> anyhow::Result<()> {
         credentials_store,
         Some(metadata_dir),
     ));
+
+    // 5. Configura a replicação nativa para peer secundário se habilitada
+    if let Some(ref peer_endpoint) = cli.peer_endpoint {
+        let access_key = cli.peer_access_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("A replicação nativa exige obrigatoriamente a credencial --peer-access-key")
+        })?;
+        let secret_key = cli.peer_secret_key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("A replicação nativa exige obrigatoriamente a credencial --peer-secret-key")
+        })?;
+
+        info!("============================================================");
+        info!("🔗 Replicação Nativa P2P HABILITADA:");
+        info!("📍 Peer de Destino:  {}", peer_endpoint);
+        info!("🔑 Peer Access Key:  {}", access_key);
+        info!("🌍 Peer Região:      {}", cli.peer_region);
+        info!("============================================================");
+
+        let repl_config = ReplicationConfig::new(
+            peer_endpoint.clone(),
+            access_key.to_string(),
+            secret_key.to_string(),
+            Some(cli.peer_region),
+        );
+        let repl_engine = ReplicationEngine::start(repl_config);
+        gateway_service.set_replication_engine(repl_engine);
+    }
 
     // 5. Inicia o Garbage Collector & Extent Compactor em segundo plano (spawn_blocking a cada 30s)
     let gc_service = gateway_service.clone();

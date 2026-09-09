@@ -1,5 +1,9 @@
 use crate::gc::GcReport;
 use crate::lifecycle::{LifecycleEngine, LifecycleReport};
+use crate::replication::{
+    ReplicationConfig, ReplicationEngine, ReplicationEvent, ReplicationUpdateRequest,
+    REPLICATION_HEADER,
+};
 use crate::router::{S3Action, S3Router};
 use crate::xml::{
     AccessControlPolicy, BucketItem, CommonPrefixItem, CompleteMultipartUploadResult,
@@ -251,6 +255,8 @@ pub struct S3GatewayService {
     policies: RwLock<HashMap<String, BucketPolicy>>,
     encryption_configs: RwLock<HashMap<String, ServerSideEncryptionConfiguration>>,
     cors_configs: RwLock<HashMap<String, String>>,
+    pub replication_engine: RwLock<Option<Arc<ReplicationEngine>>>,
+    pub saved_replication_config: RwLock<Option<ReplicationConfig>>,
 }
 
 impl S3GatewayService {
@@ -353,6 +359,45 @@ impl S3GatewayService {
             }
         }
 
+        let mut replication_engine = None;
+        let mut saved_replication_config: Option<ReplicationConfig> = None;
+
+        if let Some(ref dir) = metadata_dir {
+            let repl_file = dir.join("replication.json");
+            if repl_file.exists() {
+                if let Ok(data) = std::fs::read_to_string(&repl_file) {
+                    #[derive(Deserialize)]
+                    struct StoredRepl {
+                        enabled: bool,
+                        peer_endpoint: Option<String>,
+                        peer_access_key: Option<String>,
+                        peer_secret_key: Option<String>,
+                        #[serde(default = "default_repl_region")]
+                        peer_region: Option<String>,
+                    }
+                    fn default_repl_region() -> Option<String> {
+                        Some("us-east-1".to_string())
+                    }
+
+                    if let Ok(stored) = serde_json::from_str::<StoredRepl>(&data) {
+                        if let (Some(ep), Some(ak), Some(sk)) = (
+                            stored.peer_endpoint,
+                            stored.peer_access_key,
+                            stored.peer_secret_key,
+                        ) {
+                            if !ep.trim().is_empty() && !ak.trim().is_empty() && !sk.trim().is_empty() {
+                                let cfg = ReplicationConfig::new(ep, ak, sk, stored.peer_region);
+                                if stored.enabled {
+                                    replication_engine = Some(ReplicationEngine::start(cfg.clone()));
+                                }
+                                saved_replication_config = Some(cfg);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
             node_id,
             storage,
@@ -368,7 +413,23 @@ impl S3GatewayService {
             policies: RwLock::new(policies),
             encryption_configs: RwLock::new(encryption_configs),
             cors_configs: RwLock::new(cors_configs),
+            replication_engine: RwLock::new(replication_engine),
+            saved_replication_config: RwLock::new(saved_replication_config),
         }
+    }
+
+    /// Configura o motor de replicação assíncrono para o gateway
+    pub fn set_replication_engine(&self, engine: Arc<ReplicationEngine>) {
+        let cfg = engine.config.clone();
+        {
+            let mut guard = self.replication_engine.write().unwrap();
+            *guard = Some(engine);
+        }
+        {
+            let mut saved = self.saved_replication_config.write().unwrap();
+            *saved = Some(cfg);
+        }
+        self.persist_replication();
     }
 
     pub fn persist_buckets(&self) {
@@ -433,6 +494,44 @@ impl S3GatewayService {
             if let Ok(json) = serde_json::to_string_pretty(&map) {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(dir.join("lifecycles.json"), json);
+            }
+        }
+    }
+
+    pub fn persist_replication(&self) {
+        if let Some(ref dir) = self.metadata_dir {
+            let engine_guard = self.replication_engine.read().unwrap();
+            let saved_guard = self.saved_replication_config.read().unwrap();
+
+            let to_save = if let Some(ref engine) = *engine_guard {
+                serde_json::json!({
+                    "enabled": true,
+                    "peer_endpoint": engine.config.peer_endpoint,
+                    "peer_access_key": engine.config.peer_access_key,
+                    "peer_secret_key": engine.config.peer_secret_key,
+                    "peer_region": engine.config.peer_region,
+                })
+            } else if let Some(ref saved) = *saved_guard {
+                serde_json::json!({
+                    "enabled": false,
+                    "peer_endpoint": saved.peer_endpoint,
+                    "peer_access_key": saved.peer_access_key,
+                    "peer_secret_key": saved.peer_secret_key,
+                    "peer_region": saved.peer_region,
+                })
+            } else {
+                serde_json::json!({
+                    "enabled": false,
+                    "peer_endpoint": null,
+                    "peer_access_key": null,
+                    "peer_secret_key": null,
+                    "peer_region": null,
+                })
+            };
+
+            if let Ok(json) = serde_json::to_string_pretty(&to_save) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("replication.json"), json);
             }
         }
     }
@@ -700,10 +799,22 @@ impl S3GatewayService {
             };
         }
 
-        // 3. API Administrativa Interna do Z3S (Métricas do Cluster & IAM)
+        // 3. API Administrativa Interna do Z3S (Métricas do Cluster & IAM & Replicação)
         if path.starts_with("/z3s/api/") {
             if method == "GET" && path == "/z3s/api/cluster/metrics" {
                 return self.handle_cluster_metrics();
+            }
+            if method == "GET" && path == "/z3s/api/cluster/replication" {
+                return self.handle_cluster_replication();
+            }
+            if method == "POST" && path == "/z3s/api/cluster/replication" {
+                return self.handle_update_replication(body);
+            }
+            if method == "POST" && path == "/z3s/api/cluster/replication/test" {
+                return self.handle_test_replication(body);
+            }
+            if method == "POST" && path == "/z3s/api/cluster/replication/sync" {
+                return self.handle_sync_replication();
             }
             if method == "GET" && path == "/z3s/api/iam/keys" {
                 return self.handle_iam_list_keys();
@@ -772,37 +883,42 @@ impl S3GatewayService {
             }
         };
 
-        match action {
+        let is_replicated_call = headers
+            .get(REPLICATION_HEADER)
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let resp = match &action {
             S3Action::ListBuckets => self.handle_list_buckets(),
-            S3Action::HeadBucket { bucket } => self.handle_head_bucket(&bucket),
-            S3Action::GetBucketLocation { bucket } => self.handle_get_bucket_location(&bucket),
-            S3Action::GetBucketVersioning { bucket } => self.handle_get_bucket_versioning(&bucket),
-            S3Action::PutBucketVersioning { bucket } => self.handle_put_bucket_versioning(&bucket, body),
-            S3Action::GetBucketAcl { bucket } => self.handle_get_bucket_acl(&bucket),
-            S3Action::PutBucketAcl { bucket } => self.handle_put_bucket_acl(&bucket),
-            S3Action::GetBucketPolicy { bucket } => self.handle_get_bucket_policy(&bucket),
-            S3Action::PutBucketPolicy { bucket } => self.handle_put_bucket_policy(&bucket, body),
-            S3Action::DeleteBucketPolicy { bucket } => self.handle_delete_bucket_policy(&bucket),
-            S3Action::GetBucketCors { bucket } => self.handle_get_bucket_cors(&bucket),
-            S3Action::PutBucketCors { bucket } => self.handle_put_bucket_cors(&bucket, body),
-            S3Action::DeleteBucketCors { bucket } => self.handle_delete_bucket_cors(&bucket),
-            S3Action::GetBucketLifecycle { bucket } => self.handle_get_bucket_lifecycle(&bucket),
-            S3Action::PutBucketLifecycle { bucket } => self.handle_put_bucket_lifecycle(&bucket, body),
-            S3Action::DeleteBucketLifecycle { bucket } => self.handle_delete_bucket_lifecycle(&bucket),
-            S3Action::GetBucketTagging { bucket } => self.handle_get_bucket_tagging(&bucket),
-            S3Action::GetBucketEncryption { bucket } => self.handle_get_bucket_encryption(&bucket),
-            S3Action::PutBucketEncryption { bucket } => self.handle_put_bucket_encryption(&bucket, body),
-            S3Action::DeleteBucketEncryption { bucket } => self.handle_delete_bucket_encryption(&bucket),
-            S3Action::GetPublicAccessBlock { bucket } => self.handle_get_public_access_block(&bucket),
-            S3Action::ListMultipartUploads { bucket } => self.handle_list_multipart_uploads(&bucket),
-            S3Action::CreateBucket { bucket } => self.handle_create_bucket(&bucket),
-            S3Action::DeleteBucket { bucket } => self.handle_delete_bucket(&bucket),
+            S3Action::HeadBucket { bucket } => self.handle_head_bucket(bucket),
+            S3Action::GetBucketLocation { bucket } => self.handle_get_bucket_location(bucket),
+            S3Action::GetBucketVersioning { bucket } => self.handle_get_bucket_versioning(bucket),
+            S3Action::PutBucketVersioning { bucket } => self.handle_put_bucket_versioning(bucket, body),
+            S3Action::GetBucketAcl { bucket } => self.handle_get_bucket_acl(bucket),
+            S3Action::PutBucketAcl { bucket } => self.handle_put_bucket_acl(bucket),
+            S3Action::GetBucketPolicy { bucket } => self.handle_get_bucket_policy(bucket),
+            S3Action::PutBucketPolicy { bucket } => self.handle_put_bucket_policy(bucket, body),
+            S3Action::DeleteBucketPolicy { bucket } => self.handle_delete_bucket_policy(bucket),
+            S3Action::GetBucketCors { bucket } => self.handle_get_bucket_cors(bucket),
+            S3Action::PutBucketCors { bucket } => self.handle_put_bucket_cors(bucket, body),
+            S3Action::DeleteBucketCors { bucket } => self.handle_delete_bucket_cors(bucket),
+            S3Action::GetBucketLifecycle { bucket } => self.handle_get_bucket_lifecycle(bucket),
+            S3Action::PutBucketLifecycle { bucket } => self.handle_put_bucket_lifecycle(bucket, body),
+            S3Action::DeleteBucketLifecycle { bucket } => self.handle_delete_bucket_lifecycle(bucket),
+            S3Action::GetBucketTagging { bucket } => self.handle_get_bucket_tagging(bucket),
+            S3Action::GetBucketEncryption { bucket } => self.handle_get_bucket_encryption(bucket),
+            S3Action::PutBucketEncryption { bucket } => self.handle_put_bucket_encryption(bucket, body),
+            S3Action::DeleteBucketEncryption { bucket } => self.handle_delete_bucket_encryption(bucket),
+            S3Action::GetPublicAccessBlock { bucket } => self.handle_get_public_access_block(bucket),
+            S3Action::ListMultipartUploads { bucket } => self.handle_list_multipart_uploads(bucket),
+            S3Action::CreateBucket { bucket } => self.handle_create_bucket(bucket),
+            S3Action::DeleteBucket { bucket } => self.handle_delete_bucket(bucket),
             S3Action::ListObjectsV2 {
                 bucket,
                 prefix,
                 delimiter,
                 max_keys,
-            } => self.handle_list_objects(&bucket, &prefix, delimiter, max_keys, headers),
+            } => self.handle_list_objects(bucket, prefix, delimiter.clone(), *max_keys, headers),
             S3Action::ListObjectVersions {
                 bucket,
                 prefix,
@@ -810,46 +926,104 @@ impl S3GatewayService {
                 key_marker,
                 version_id_marker,
                 max_keys,
-            } => self.handle_list_object_versions(&bucket, &prefix, delimiter, key_marker, version_id_marker, max_keys),
-            S3Action::PutObject { bucket, key } => self.handle_put_object(&bucket, &key, headers, body),
+            } => self.handle_list_object_versions(bucket, prefix, delimiter.clone(), key_marker.clone(), version_id_marker.clone(), *max_keys),
+            S3Action::PutObject { bucket, key } => self.handle_put_object(bucket, key, headers, body),
             S3Action::CopyObject {
                 bucket,
                 key,
                 source_bucket,
                 source_key,
-            } => self.handle_copy_object(&bucket, &key, &source_bucket, &source_key, headers),
+            } => self.handle_copy_object(bucket, key, source_bucket, source_key, headers),
             S3Action::GetObject { bucket, key, version_id, range } => {
-                self.handle_get_object(&bucket, &key, version_id.as_deref(), range, headers)
+                self.handle_get_object(bucket, key, version_id.as_deref(), *range, headers)
             }
-            S3Action::GetObjectAcl { bucket, key } => self.handle_get_object_acl(&bucket, &key),
-            S3Action::PutObjectAcl { bucket, key } => self.handle_put_object_acl(&bucket, &key),
+            S3Action::GetObjectAcl { bucket, key } => self.handle_get_object_acl(bucket, key),
+            S3Action::PutObjectAcl { bucket, key } => self.handle_put_object_acl(bucket, key),
             S3Action::HeadObject { bucket, key, version_id } => {
-                self.handle_head_object(&bucket, &key, version_id.as_deref(), headers)
+                self.handle_head_object(bucket, key, version_id.as_deref(), headers)
             }
             S3Action::DeleteObject { bucket, key, version_id } => {
-                self.handle_delete_object(&bucket, &key, version_id.as_deref(), headers)
+                self.handle_delete_object(bucket, key, version_id.as_deref(), headers)
             }
-            S3Action::DeleteObjects { bucket } => self.handle_delete_objects(&bucket, body),
+            S3Action::DeleteObjects { bucket } => self.handle_delete_objects(bucket, body),
             S3Action::InitiateMultipartUpload { bucket, key } => {
-                self.handle_initiate_multipart(&bucket, &key, headers)
+                self.handle_initiate_multipart(bucket, key, headers)
             }
             S3Action::UploadPart {
                 bucket,
                 key,
                 upload_id,
                 part_number,
-            } => self.handle_upload_part(&bucket, &key, &upload_id, part_number, body),
+            } => self.handle_upload_part(bucket, key, upload_id, *part_number, body),
             S3Action::CompleteMultipartUpload {
                 bucket,
                 key,
                 upload_id,
-            } => self.handle_complete_multipart(&bucket, &key, &upload_id, headers),
+            } => self.handle_complete_multipart(bucket, key, upload_id, headers),
             S3Action::AbortMultipartUpload {
                 bucket,
                 key,
                 upload_id,
-            } => self.handle_abort_multipart(&bucket, &key, &upload_id),
+            } => self.handle_abort_multipart(bucket, key, upload_id),
+        };
+
+        if !is_replicated_call && (resp.status >= 200 && resp.status < 300) {
+            if let Some(ref engine) = *self.replication_engine.read().unwrap() {
+                match &action {
+                    S3Action::CreateBucket { bucket } => {
+                        engine.enqueue(ReplicationEvent::CreateBucket {
+                            bucket: bucket.clone(),
+                        });
+                    }
+                    S3Action::DeleteBucket { bucket } => {
+                        engine.enqueue(ReplicationEvent::DeleteBucket {
+                            bucket: bucket.clone(),
+                        });
+                    }
+                    S3Action::PutObject { bucket, key } => {
+                        let content_type = headers
+                            .get("content-type")
+                            .cloned()
+                            .unwrap_or_else(|| "application/octet-stream".to_string());
+                        let mut user_metadata = HashMap::new();
+                        for (k, v) in headers {
+                            if k.starts_with("x-amz-meta-") {
+                                user_metadata.insert(k.clone(), v.clone());
+                            }
+                        }
+                        engine.enqueue(ReplicationEvent::PutObject {
+                            bucket: bucket.clone(),
+                            key: key.clone(),
+                            body: Bytes::copy_from_slice(body),
+                            content_type,
+                            metadata: user_metadata,
+                        });
+                    }
+                    S3Action::CopyObject { bucket, key, .. }
+                    | S3Action::CompleteMultipartUpload { bucket, key, .. } => {
+                        if let Ok((payload, content_type, metadata)) = self.read_object_bytes(bucket, key) {
+                            tracing::info!("🔄 Replicando objeto composto/multipart '{}/{}' ({} bytes) para o peer", bucket, key, payload.len());
+                            engine.enqueue(ReplicationEvent::PutObject {
+                                bucket: bucket.clone(),
+                                key: key.clone(),
+                                body: payload,
+                                content_type,
+                                metadata,
+                            });
+                        }
+                    }
+                    S3Action::DeleteObject { bucket, key, .. } => {
+                        engine.enqueue(ReplicationEvent::DeleteObject {
+                            bucket: bucket.clone(),
+                            key: key.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
         }
+
+        resp
     }
 
     fn handle_list_buckets(&self) -> GatewayHttpResponse {
@@ -1148,6 +1322,25 @@ impl S3GatewayService {
             "garbage_collector": {
                 "interval_seconds": 30,
                 "strategy": "Physical dead-extent reclamation & WAL compaction"
+            },
+            "replication": if let Some(ref engine) = *self.replication_engine.read().unwrap() {
+                serde_json::json!({
+                    "enabled": true,
+                    "status": "ACTIVE",
+                    "peer_endpoint": engine.config.peer_endpoint,
+                    "peer_access_key": engine.config.peer_access_key,
+                    "peer_region": engine.config.peer_region,
+                    "protocol": "AWS SigV4 RFC 3986",
+                    "mode": "Asynchronous Real-Time P2P",
+                    "health": "ONLINE"
+                })
+            } else {
+                serde_json::json!({
+                    "enabled": false,
+                    "status": "STANDALONE",
+                    "peer_endpoint": null,
+                    "health": "NO_PEER"
+                })
             }
         });
 
@@ -1159,6 +1352,387 @@ impl S3GatewayService {
             headers,
             body: Bytes::from(json.to_string()),
         }
+    }
+
+    fn handle_cluster_replication(&self) -> GatewayHttpResponse {
+        let engine_guard = self.replication_engine.read().unwrap();
+        let saved_guard = self.saved_replication_config.read().unwrap();
+
+        let json = if let Some(ref engine) = *engine_guard {
+            serde_json::json!({
+                "enabled": true,
+                "status": "ACTIVE",
+                "peer_endpoint": engine.config.peer_endpoint,
+                "peer_access_key": engine.config.peer_access_key,
+                "peer_region": engine.config.peer_region,
+                "has_secret_key": !engine.config.peer_secret_key.is_empty(),
+                "protocol": "AWS SigV4 RFC 3986",
+                "mode": "Asynchronous Real-Time P2P",
+                "anti_loop_header": "x-z3s-replication",
+                "health": "ONLINE"
+            })
+        } else if let Some(ref saved) = *saved_guard {
+            serde_json::json!({
+                "enabled": false,
+                "status": "DISABLED",
+                "peer_endpoint": saved.peer_endpoint,
+                "peer_access_key": saved.peer_access_key,
+                "peer_region": saved.peer_region,
+                "has_secret_key": !saved.peer_secret_key.is_empty(),
+                "protocol": "AWS SigV4 RFC 3986",
+                "mode": "Single Node",
+                "anti_loop_header": "x-z3s-replication",
+                "health": "NO_PEER"
+            })
+        } else {
+            serde_json::json!({
+                "enabled": false,
+                "status": "STANDALONE",
+                "peer_endpoint": null,
+                "peer_access_key": null,
+                "peer_region": null,
+                "has_secret_key": false,
+                "protocol": null,
+                "mode": "Single Node",
+                "anti_loop_header": null,
+                "health": "NO_PEER"
+            })
+        };
+
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+        headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+        GatewayHttpResponse {
+            status: 200,
+            headers,
+            body: Bytes::from(json.to_string()),
+        }
+    }
+
+    fn handle_update_replication(&self, body: &[u8]) -> GatewayHttpResponse {
+        let req = match serde_json::from_slice::<ReplicationUpdateRequest>(body) {
+            Ok(r) => r,
+            Err(e) => {
+                let mut headers = HashMap::new();
+                headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+                headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+                return GatewayHttpResponse {
+                    status: 400,
+                    headers,
+                    body: Bytes::from(serde_json::json!({
+                        "ok": false,
+                        "error": format!("Payload JSON inválido: {}", e)
+                    }).to_string()),
+                };
+            }
+        };
+
+        if req.enabled {
+            let current_saved = self.saved_replication_config.read().unwrap().clone();
+            let endpoint = req.peer_endpoint
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| current_saved.as_ref().map(|s| s.peer_endpoint.clone()));
+            let access_key = req.peer_access_key
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| current_saved.as_ref().map(|s| s.peer_access_key.clone()));
+            let secret_key = req.peer_secret_key
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| current_saved.as_ref().map(|s| s.peer_secret_key.clone()));
+            let region = req.peer_region
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| current_saved.as_ref().map(|s| s.peer_region.clone()))
+                .unwrap_or_else(|| "us-east-1".to_string());
+
+            let (ep, ak, sk) = match (endpoint, access_key, secret_key) {
+                (Some(e), Some(a), Some(s)) if !e.is_empty() && !a.is_empty() && !s.is_empty() => (e, a, s),
+                _ => {
+                    let mut headers = HashMap::new();
+                    headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+                    headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+                    return GatewayHttpResponse {
+                        status: 400,
+                        headers,
+                        body: Bytes::from(serde_json::json!({
+                            "ok": false,
+                            "error": "Para ativar a replicação, informe obrigatoriamente: Endpoint do Peer, Access Key e Secret Key válidos."
+                        }).to_string()),
+                    };
+                }
+            };
+
+            let config = ReplicationConfig::new(ep, ak, sk, Some(region));
+            let engine = ReplicationEngine::start(config.clone());
+
+            {
+                let mut engine_guard = self.replication_engine.write().unwrap();
+                *engine_guard = Some(engine);
+            }
+            {
+                let mut saved_guard = self.saved_replication_config.write().unwrap();
+                *saved_guard = Some(config);
+            }
+            self.persist_replication();
+            let _ = self.sync_all_to_peer();
+        } else {
+            {
+                let mut engine_guard = self.replication_engine.write().unwrap();
+                *engine_guard = None;
+            }
+            self.persist_replication();
+        }
+
+        self.handle_cluster_replication()
+    }
+
+    fn handle_test_replication(&self, body: &[u8]) -> GatewayHttpResponse {
+        let req = match serde_json::from_slice::<ReplicationUpdateRequest>(body) {
+            Ok(r) => r,
+            Err(e) => {
+                let mut headers = HashMap::new();
+                headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+                headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+                return GatewayHttpResponse {
+                    status: 400,
+                    headers,
+                    body: Bytes::from(serde_json::json!({
+                        "ok": false,
+                        "error": format!("Payload JSON inválido: {}", e)
+                    }).to_string()),
+                };
+            }
+        };
+
+        let current_saved = self.saved_replication_config.read().unwrap().clone();
+        let endpoint = req.peer_endpoint
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| current_saved.as_ref().map(|s| s.peer_endpoint.clone()));
+        let access_key = req.peer_access_key
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| current_saved.as_ref().map(|s| s.peer_access_key.clone()));
+        let secret_key = req.peer_secret_key
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| current_saved.as_ref().map(|s| s.peer_secret_key.clone()));
+        let region = req.peer_region
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| current_saved.as_ref().map(|s| s.peer_region.clone()))
+            .unwrap_or_else(|| "us-east-1".to_string());
+
+        let (ep, ak, sk) = match (endpoint, access_key, secret_key) {
+            (Some(e), Some(a), Some(s)) if !e.is_empty() && !a.is_empty() && !s.is_empty() => (e, a, s),
+            _ => {
+                let mut headers = HashMap::new();
+                headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+                headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+                return GatewayHttpResponse {
+                    status: 400,
+                    headers,
+                    body: Bytes::from(serde_json::json!({
+                        "ok": false,
+                        "error": "Para testar a conectividade, informe: Endpoint do Peer, Access Key e Secret Key."
+                    }).to_string()),
+                };
+            }
+        };
+
+        let config = ReplicationConfig::new(ep, ak, sk, Some(region));
+        let test_result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(ReplicationEngine::test_connectivity(&config))
+            })
+        } else {
+            tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Erro ao instanciar runtime tokio: {}", e))
+                .and_then(|rt| rt.block_on(ReplicationEngine::test_connectivity(&config)))
+        };
+
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+        headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+
+        let (status, resp_json) = match test_result {
+            Ok(()) => (
+                200,
+                serde_json::json!({
+                    "ok": true,
+                    "message": "Conectividade e credenciais AWS SigV4 verificadas com sucesso com o peer!"
+                }),
+            ),
+            Err(err_msg) => (
+                400,
+                serde_json::json!({
+                    "ok": false,
+                    "error": err_msg
+                }),
+            ),
+        };
+
+        GatewayHttpResponse {
+            status,
+            headers,
+            body: Bytes::from(resp_json.to_string()),
+        }
+    }
+
+    fn handle_sync_replication(&self) -> GatewayHttpResponse {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json; charset=utf-8".to_string());
+        headers.insert("access-control-allow-origin".to_string(), "*".to_string());
+
+        match self.sync_all_to_peer() {
+            Ok(count) => GatewayHttpResponse {
+                status: 200,
+                headers,
+                body: Bytes::from(serde_json::json!({
+                    "ok": true,
+                    "message": format!("Sincronização iniciada com sucesso! {} item(ns) enfileirados para replicação com o peer.", count),
+                    "items_synced": count
+                }).to_string()),
+            },
+            Err(e) => GatewayHttpResponse {
+                status: 400,
+                headers,
+                body: Bytes::from(serde_json::json!({
+                    "ok": false,
+                    "error": e
+                }).to_string()),
+            },
+        }
+    }
+
+    /// Reconstitui e lê os bytes brutos decriptografados de um objeto do storage
+    pub fn read_object_bytes(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(Bytes, String, HashMap<String, String>), String> {
+        let manifest_key = format!("{}/{}", bucket, key);
+        let manifest = {
+            let map = self.objects.read().unwrap();
+            map.get(&manifest_key)
+                .and_then(|versions| {
+                    versions
+                        .iter()
+                        .find(|v| v.metadata.is_latest)
+                        .or_else(|| versions.first())
+                        .cloned()
+                })
+        };
+
+        let manifest = manifest.ok_or_else(|| format!("Objeto '{}/{}' não encontrado", bucket, key))?;
+        if manifest.metadata.is_delete_marker {
+            return Err("Objeto é um delete marker".to_string());
+        }
+
+        let extra_tag_len = if manifest.metadata.encryption.is_some() { 16 } else { 0 };
+
+        let mut full_payload = if !manifest.parts.is_empty() {
+            let mut payload = Vec::with_capacity(manifest.metadata.size as usize + extra_tag_len);
+            for part in &manifest.parts {
+                let mut shards_options: Vec<Option<Vec<u8>>> = Vec::new();
+                for shard in &part.shards {
+                    match self.storage.read_shard(&shard.shard_id.0) {
+                        Ok(data) => shards_options.push(Some(data)),
+                        Err(_) => shards_options.push(None),
+                    }
+                }
+                match self.erasure.reconstruct(&mut shards_options, part.size as usize) {
+                    Ok(p_data) => payload.extend(p_data),
+                    Err(e) => return Err(format!("Erro ao reconstruir parte: {}", e)),
+                }
+            }
+            payload
+        } else {
+            let mut shards_options: Vec<Option<Vec<u8>>> = Vec::new();
+            for shard in &manifest.shards {
+                match self.storage.read_shard(&shard.shard_id.0) {
+                    Ok(data) => shards_options.push(Some(data)),
+                    Err(_) => shards_options.push(None),
+                }
+            }
+            match self.erasure.reconstruct(&mut shards_options, manifest.metadata.size as usize + extra_tag_len) {
+                Ok(p) => p,
+                Err(e) => return Err(format!("Erro ao reconstruir objeto: {}", e)),
+            }
+        };
+
+        if let Some(ref enc) = manifest.metadata.encryption {
+            if enc.algorithm == "AES256" || enc.algorithm == "aws:kms" {
+                let key_id = enc.kms_key_id.as_deref().unwrap_or("aws/s3");
+                let encrypted_dek = EncryptedDataKey {
+                    key_id: key_id.to_string(),
+                    encrypted_dek_hex: enc.encrypted_dek_hex.clone().unwrap_or_default(),
+                    iv_hex: enc.dek_iv_hex.clone().unwrap_or_default(),
+                };
+                if let Ok(raw_dek) = self.kms.decrypt_data_key(&encrypted_dek) {
+                    let mut iv = [0u8; 12];
+                    if let Ok(iv_bytes) = hex::decode(enc.payload_iv_hex.as_deref().unwrap_or_default()) {
+                        if iv_bytes.len() == 12 {
+                            iv.copy_from_slice(&iv_bytes);
+                        }
+                    }
+                    if let Ok(decrypted) = KmsEngine::decrypt_payload(&raw_dek, &full_payload, &iv) {
+                        full_payload = decrypted;
+                    }
+                }
+            }
+        }
+
+        let content_type = manifest.metadata.content_type.clone();
+        let user_metadata = manifest.metadata.user_metadata.clone();
+
+        Ok((Bytes::from(full_payload), content_type, user_metadata))
+    }
+
+    /// Varre todos os buckets e objetos locais e os enfileira para envio ao peer secundário
+    pub fn sync_all_to_peer(&self) -> Result<usize, String> {
+        let engine = {
+            let guard = self.replication_engine.read().unwrap();
+            guard.clone().ok_or_else(|| "Replicação não está ativa neste servidor".to_string())?
+        };
+
+        let mut count = 0;
+
+        // 1. Enfileira todos os buckets
+        let buckets = self.buckets.read().unwrap().clone();
+        for b_name in buckets.keys() {
+            engine.enqueue(ReplicationEvent::CreateBucket { bucket: b_name.clone() });
+            count += 1;
+        }
+
+        // 2. Enfileira todos os objetos mais recentes
+        let objects = self.objects.read().unwrap().clone();
+        for (manifest_key, versions) in objects {
+            if let Some((bucket, key)) = manifest_key.split_once('/') {
+                if let Some(latest) = versions.iter().find(|v| v.metadata.is_latest).or_else(|| versions.first()) {
+                    if !latest.metadata.is_delete_marker {
+                        if let Ok((payload, content_type, metadata)) = self.read_object_bytes(bucket, key) {
+                            tracing::info!(
+                                "🔄 Sincronizando objeto existente '{}/{}' ({} bytes) para o peer",
+                                bucket, key, payload.len()
+                            );
+                            engine.enqueue(ReplicationEvent::PutObject {
+                                bucket: bucket.to_string(),
+                                key: key.to_string(),
+                                body: payload,
+                                content_type,
+                                metadata,
+                            });
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     fn handle_iam_list_keys(&self) -> GatewayHttpResponse {
@@ -3885,4 +4459,92 @@ mod tests {
         let anon_get_private_again = service.handle_request("GET", "/priv-bucket/file.iso", None, &anon_headers, &[]);
         assert_eq!(anon_get_private_again.status, 403);
     }
+
+    #[test]
+    fn test_dynamic_replication_configuration_and_persistence() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(StorageEngine::open(temp_dir.path().join("storage"), 10 * 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+        let metadata_dir = temp_dir.path().join("metadata");
+
+        let service = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage.clone(),
+            erasure.clone(),
+            credentials.clone(),
+            Some(metadata_dir.clone()),
+        );
+        let headers = HashMap::new();
+
+        // 1. Inicialmente deve estar em Standalone
+        let resp = service.handle_request("GET", "/z3s/api/cluster/replication", None, &headers, &[]);
+        assert_eq!(resp.status, 200);
+        let val: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(val["enabled"], false);
+        assert_eq!(val["status"], "STANDALONE");
+
+        // 2. Tenta habilitar sem campos obrigatórios -> 400 Bad Request
+        let bad_payload = br#"{"enabled": true, "peer_endpoint": ""}"#;
+        let resp_bad = service.handle_request("POST", "/z3s/api/cluster/replication", None, &headers, bad_payload);
+        assert_eq!(resp_bad.status, 400);
+
+        // 3. Usuário configura e ativa a replicação via API
+        let config_payload = br#"{
+            "enabled": true,
+            "peer_endpoint": "http://192.168.122.12:9000",
+            "peer_access_key": "PEERACCESSKEY",
+            "peer_secret_key": "PEERSECRETKEY123",
+            "peer_region": "us-east-1"
+        }"#;
+        let resp_enable = service.handle_request("POST", "/z3s/api/cluster/replication", None, &headers, config_payload);
+        assert_eq!(resp_enable.status, 200);
+        let val_enable: serde_json::Value = serde_json::from_slice(&resp_enable.body).unwrap();
+        assert_eq!(val_enable["enabled"], true);
+        assert_eq!(val_enable["status"], "ACTIVE");
+        assert_eq!(val_enable["peer_endpoint"], "http://192.168.122.12:9000");
+        assert_eq!(val_enable["has_secret_key"], true);
+
+        // Verifica persistência no disco
+        let repl_json_path = metadata_dir.join("replication.json");
+        assert!(repl_json_path.exists());
+
+        // 4. Reinicia o serviço para testar recarregamento a partir do disco
+        let service_reloaded = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage.clone(),
+            erasure.clone(),
+            credentials.clone(),
+            Some(metadata_dir.clone()),
+        );
+        let resp_reloaded = service_reloaded.handle_request("GET", "/z3s/api/cluster/replication", None, &headers, &[]);
+        assert_eq!(resp_reloaded.status, 200);
+        let val_reloaded: serde_json::Value = serde_json::from_slice(&resp_reloaded.body).unwrap();
+        assert_eq!(val_reloaded["enabled"], true);
+        assert_eq!(val_reloaded["status"], "ACTIVE");
+        assert_eq!(val_reloaded["peer_endpoint"], "http://192.168.122.12:9000");
+
+        // 5. Usuário desativa a replicação
+        let disable_payload = br#"{"enabled": false}"#;
+        let resp_disable = service_reloaded.handle_request("POST", "/z3s/api/cluster/replication", None, &headers, disable_payload);
+        assert_eq!(resp_disable.status, 200);
+        let val_disable: serde_json::Value = serde_json::from_slice(&resp_disable.body).unwrap();
+        assert_eq!(val_disable["enabled"], false);
+        assert_eq!(val_disable["status"], "DISABLED");
+        assert_eq!(val_disable["peer_endpoint"], "http://192.168.122.12:9000");
+
+        // 6. Reinicia novamente e valida que permanece desativado
+        let service_disabled = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage,
+            erasure,
+            credentials,
+            Some(metadata_dir),
+        );
+        let resp_check = service_disabled.handle_request("GET", "/z3s/api/cluster/replication", None, &headers, &[]);
+        let val_check: serde_json::Value = serde_json::from_slice(&resp_check.body).unwrap();
+        assert_eq!(val_check["enabled"], false);
+        assert_eq!(val_check["status"], "DISABLED");
+    }
 }
+

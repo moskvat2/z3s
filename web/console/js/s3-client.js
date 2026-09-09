@@ -744,6 +744,47 @@ class S3Client {
     return await res.json();
   }
 
+  async getReplicationStatus() {
+    const res = await fetch(`${this.endpoint}/z3s/api/cluster/replication`);
+    if (!res.ok) throw new Error(`Erro ao obter status de replicação: HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async saveReplicationConfig(config) {
+    const res = await fetch(`${this.endpoint}/z3s/api/cluster/replication`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Erro ao salvar replicação: HTTP ${res.status}`);
+    return data;
+  }
+
+  async testReplicationConfig(config) {
+    const res = await fetch(`${this.endpoint}/z3s/api/cluster/replication/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `Falha no teste: HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async syncReplication() {
+    const res = await fetch(`${this.endpoint}/z3s/api/cluster/replication/sync`, {
+      method: "POST"
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `Falha na sincronização: HTTP ${res.status}`);
+    }
+    return data;
+  }
+
   async listAccessKeys() {
     const res = await fetch(`${this.endpoint}/z3s/api/iam/keys`);
     if (!res.ok) throw new Error(`Erro ao listar chaves IAM: HTTP ${res.status}`);

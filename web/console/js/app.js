@@ -95,6 +95,10 @@ function App() {
               <AwsClusterMetricsView addToast={addToast} />
             )}
 
+            {currentTab === "replication" && (
+              <AwsReplicationView addToast={addToast} />
+            )}
+
             {currentTab === "iam-keys" && (
               <AwsIamKeysView addToast={addToast} />
             )}
@@ -349,6 +353,14 @@ function AwsSidebar({ currentTab, collapsed, onNavigate }) {
           badge: "Healthy",
           description: "Monitoramento Reed-Solomon e Extents",
           active: currentTab === "cluster-metrics"
+        },
+        {
+          id: "replication",
+          label: "Replicação P2P (HA)",
+          icon: "🔄",
+          badge: "Active",
+          description: "Sincronização assíncrona entre nós",
+          active: currentTab === "replication"
         }
       ]
     },
@@ -3950,6 +3962,462 @@ function AwsIamKeysView({ addToast }) {
                 >
                   Sim, Revogar Chave
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// 12.1. AWS Replication & Multi-Node HA View
+// ----------------------------------------------------------------------
+function AwsReplicationView({ addToast }) {
+  const [replication, setReplication] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [showSecret, setShowSecret] = useState(false);
+
+  // Form inputs
+  const [peerEndpoint, setPeerEndpoint] = useState("");
+  const [peerAccessKey, setPeerAccessKey] = useState("");
+  const [peerSecretKey, setPeerSecretKey] = useState("");
+  const [peerRegion, setPeerRegion] = useState("us-east-1");
+  const [formInitialized, setFormInitialized] = useState(false);
+
+  const fetchReplication = async (isInitial = false) => {
+    try {
+      const client = AuthManager.getClient() || new S3Client();
+      const data = await client.getReplicationStatus();
+      setReplication(data);
+      if (data && (!formInitialized || isInitial)) {
+        if (data.peer_endpoint) setPeerEndpoint(data.peer_endpoint);
+        if (data.peer_access_key) setPeerAccessKey(data.peer_access_key);
+        if (data.peer_region) setPeerRegion(data.peer_region);
+        setFormInitialized(true);
+      }
+    } catch (err) {
+      console.warn("Erro ao buscar status de replicação:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchReplication(true);
+    if (!autoRefresh) return;
+    const timer = setInterval(() => fetchReplication(false), 8000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, formInitialized]);
+
+  const handleTestConnection = async () => {
+    if (!peerEndpoint.trim()) {
+      addToast("Informe o Endpoint do Servidor Peer (ex: http://192.168.122.12:9000)", "error");
+      return;
+    }
+    if (!peerAccessKey.trim()) {
+      addToast("Informe o Access Key ID do Peer", "error");
+      return;
+    }
+    if (!peerSecretKey.trim() && !replication?.has_secret_key) {
+      addToast("Informe o Secret Access Key do Peer", "error");
+      return;
+    }
+
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const client = AuthManager.getClient() || new S3Client();
+      const res = await client.testReplicationConfig({
+        peer_endpoint: peerEndpoint.trim(),
+        peer_access_key: peerAccessKey.trim(),
+        peer_secret_key: peerSecretKey.trim() || undefined,
+        peer_region: peerRegion.trim() || "us-east-1",
+      });
+      setTestResult({ ok: true, message: res.message || "Conexão e credenciais AWS SigV4 verificadas com sucesso!" });
+      addToast("Conexão validada com sucesso!", "success");
+    } catch (err) {
+      setTestResult({ ok: false, error: err.message });
+      addToast("Falha na validação do peer: " + err.message, "error");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSaveAndEnable = async () => {
+    if (!peerEndpoint.trim()) {
+      addToast("Informe o Endpoint do Servidor Peer (ex: http://192.168.122.12:9000)", "error");
+      return;
+    }
+    if (!peerAccessKey.trim()) {
+      addToast("Informe o Access Key ID do Peer", "error");
+      return;
+    }
+    if (!peerSecretKey.trim() && !replication?.has_secret_key) {
+      addToast("Informe o Secret Access Key do Peer", "error");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const client = AuthManager.getClient() || new S3Client();
+      const data = await client.saveReplicationConfig({
+        enabled: true,
+        peer_endpoint: peerEndpoint.trim(),
+        peer_access_key: peerAccessKey.trim(),
+        peer_secret_key: peerSecretKey.trim() || undefined,
+        peer_region: peerRegion.trim() || "us-east-1",
+      });
+      setReplication(data);
+      setPeerSecretKey("");
+      setTestResult(null);
+      addToast("Replicação ativada com sucesso! Todos os dados serão sincronizados em tempo real.", "success");
+    } catch (err) {
+      addToast("Erro ao ativar replicação: " + err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDisableReplication = async () => {
+    if (!confirm("Tem certeza que deseja desativar a replicação P2P para o peer secundário? As novas alterações locais não serão replicadas.")) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const client = AuthManager.getClient() || new S3Client();
+      const data = await client.saveReplicationConfig({ enabled: false });
+      setReplication(data);
+      setTestResult(null);
+      addToast("Replicação desativada. O nó agora opera em modo Standalone.", "info");
+    } catch (err) {
+      addToast("Erro ao desativar replicação: " + err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    try {
+      const client = AuthManager.getClient() || new S3Client();
+      const res = await client.syncReplication();
+      addToast(res.message || "Sincronização iniciada com sucesso!", "success");
+    } catch (err) {
+      addToast("Erro ao sincronizar dados: " + err.message, "error");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const isEnabled = Boolean(replication?.enabled);
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#eaeded]">
+        <div>
+          <h1 className="text-xl font-bold text-[#16191f] flex items-center space-x-2">
+            <span>Replicação P2P & Alta Disponibilidade (HA)</span>
+            {isEnabled ? (
+              <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded border border-emerald-300 flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>REPLICAÇÃO ATIVA (ONLINE)</span>
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 text-xs font-bold rounded border border-amber-300">
+                STANDALONE (SEM REPLICAÇÃO)
+              </span>
+            )}
+          </h1>
+          <p className="text-xs text-[#545b64]">
+            Sincronização assíncrona nativa na camada de aplicação via AWS SigV4 (RFC 3986) com credenciais dinâmicas gerenciadas pelo usuário.
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-3">
+          <label className="flex items-center space-x-1.5 text-xs text-[#545b64] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="w-3.5 h-3.5 text-[#0073bb] rounded focus:ring-0 cursor-pointer"
+            />
+            <span>Auto-refresh (8s)</span>
+          </label>
+
+          <button
+            type="button"
+            onClick={() => fetchReplication(false)}
+            className="h-8 px-3 bg-white hover:bg-slate-50 text-[#16191f] border border-[#aab7b8] text-xs font-semibold rounded flex items-center space-x-1.5 shadow-xs transition cursor-pointer"
+          >
+            <span>🔄</span>
+            <span>Atualizar</span>
+          </button>
+
+          {isEnabled && (
+            <button
+              type="button"
+              onClick={handleSyncAll}
+              disabled={syncing || saving || testing}
+              className="h-8 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded flex items-center space-x-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+              title="Sincroniza todos os buckets e objetos locais com o peer agora"
+            >
+              <span>{syncing ? "⏳" : "⚡"}</span>
+              <span>{syncing ? "Sincronizando..." : "Sincronizar Arquivos com Peer"}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {loading && !replication ? (
+        <div className="p-12 text-center text-xs text-[#545b64]">
+          <span className="animate-spin inline-block mr-2 text-base">🔄</span> Carregando status da replicação P2P...
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Top KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
+              <div className="flex items-center justify-between text-[#545b64]">
+                <span className="text-xs font-semibold">Modo de Operação</span>
+                <span className="text-base">🔄</span>
+              </div>
+              <p className="text-lg font-bold text-[#16191f]">
+                {isEnabled ? "P2P em Tempo Real" : "Single-Node"}
+              </p>
+              <p className={`text-[11px] font-semibold ${isEnabled ? "text-emerald-700" : "text-amber-700"}`}>
+                {isEnabled ? "Fila Assíncrona Tokio" : "Aguardando configuração"}
+              </p>
+            </div>
+
+            <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
+              <div className="flex items-center justify-between text-[#545b64]">
+                <span className="text-xs font-semibold">Protocolo de Transporte</span>
+                <span className="text-base">🔒</span>
+              </div>
+              <p className="text-lg font-bold text-[#16191f]">AWS SigV4</p>
+              <p className="text-[11px] text-[#545b64]">Autenticação HMAC-SHA256</p>
+            </div>
+
+            <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
+              <div className="flex items-center justify-between text-[#545b64]">
+                <span className="text-xs font-semibold">Prevenção de Loops</span>
+                <span className="text-base">🛡️</span>
+              </div>
+              <p className="text-lg font-bold text-[#16191f]">Anti-Loop Header</p>
+              <p className="text-[11px] text-slate-600 font-mono">x-z3s-replication: true</p>
+            </div>
+
+            <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-2">
+              <div className="flex items-center justify-between text-[#545b64]">
+                <span className="text-xs font-semibold">Dependência de SO</span>
+                <span className="text-base">✨</span>
+              </div>
+              <p className="text-lg font-bold text-emerald-700">Zero Scripts / Cron</p>
+              <p className="text-[11px] text-[#545b64]">100% Rust Application Native</p>
+            </div>
+          </div>
+
+          {/* Configuration Form Card (Configurada pelo Usuário) */}
+          <div className="bg-white border border-[#eaeded] rounded shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#eaeded] bg-slate-50 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-[#16191f] flex items-center space-x-2">
+                  <span>⚙️ Configuração de Replicação do Usuário</span>
+                  {isEnabled && (
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded">
+                      Ativa
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-[#545b64]">
+                  Cadastre as credenciais e o endpoint do servidor peer para onde os dados originais serão sincronizados.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+                <div>
+                  <label className="block font-semibold text-[#16191f] mb-1">
+                    Endpoint do Servidor Peer (Destino) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={peerEndpoint}
+                    onChange={(e) => setPeerEndpoint(e.target.value)}
+                    placeholder="http://192.168.122.12:9000"
+                    className="w-full px-3 py-2 bg-white border border-[#aab7b8] rounded text-[#16191f] font-mono text-xs focus:outline-none focus:border-[#0073bb] focus:ring-1 focus:ring-[#0073bb]"
+                  />
+                  <p className="mt-1 text-[11px] text-[#545b64]">
+                    URL completa com IP e porta do nó secundário Z3S S3.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#16191f] mb-1">
+                    Região S3 do Peer
+                  </label>
+                  <input
+                    type="text"
+                    value={peerRegion}
+                    onChange={(e) => setPeerRegion(e.target.value)}
+                    placeholder="us-east-1"
+                    className="w-full px-3 py-2 bg-white border border-[#aab7b8] rounded text-[#16191f] font-mono text-xs focus:outline-none focus:border-[#0073bb] focus:ring-1 focus:ring-[#0073bb]"
+                  />
+                  <p className="mt-1 text-[11px] text-[#545b64]">
+                    Região utilizada na assinatura AWS SigV4 (padrão: us-east-1).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#16191f] mb-1">
+                    Access Key ID do Peer <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={peerAccessKey}
+                    onChange={(e) => setPeerAccessKey(e.target.value)}
+                    placeholder="ex: Z3SACCESSKEYEXAMPLE ou chave IAM"
+                    className="w-full px-3 py-2 bg-white border border-[#aab7b8] rounded text-[#16191f] font-mono text-xs focus:outline-none focus:border-[#0073bb] focus:ring-1 focus:ring-[#0073bb]"
+                  />
+                  <p className="mt-1 text-[11px] text-[#545b64]">
+                    Chave de identificação cadastrada no nó secundário.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#16191f] mb-1 flex items-center justify-between">
+                    <span>Secret Access Key do Peer <span className="text-red-500">*</span></span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSecret(!showSecret)}
+                      className="text-[#0073bb] hover:underline text-[11px] cursor-pointer"
+                    >
+                      {showSecret ? "Ocultar" : "Exibir"}
+                    </button>
+                  </label>
+                  <input
+                    type={showSecret ? "text" : "password"}
+                    value={peerSecretKey}
+                    onChange={(e) => setPeerSecretKey(e.target.value)}
+                    placeholder={replication?.has_secret_key ? "•••••••• (Chave salva no servidor - deixe em branco para manter)" : "ex: Z3SSECRETKEYEXAMPLE1234567890ABCDEF"}
+                    className="w-full px-3 py-2 bg-white border border-[#aab7b8] rounded text-[#16191f] font-mono text-xs focus:outline-none focus:border-[#0073bb] focus:ring-1 focus:ring-[#0073bb]"
+                  />
+                  <p className="mt-1 text-[11px] text-[#545b64]">
+                    Chave secreta para assinatura criptográfica HMAC-SHA256.
+                  </p>
+                </div>
+              </div>
+
+              {/* Resultado do Teste de Conexão */}
+              {testResult && (
+                <div
+                  className={`p-3.5 rounded text-xs border flex items-start space-x-2.5 animate-fade-in ${
+                    testResult.ok
+                      ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+                      : "bg-red-50 border-red-300 text-red-900"
+                  }`}
+                >
+                  <span className="text-base leading-none">{testResult.ok ? "✅" : "❌"}</span>
+                  <div className="space-y-0.5">
+                    <p className="font-semibold">
+                      {testResult.ok ? "Conectividade e Autenticação Validadas!" : "Falha na Validação do Peer"}
+                    </p>
+                    <p className="text-[11px]">
+                      {testResult.ok ? testResult.message : testResult.error}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Ações */}
+              <div className="pt-3 border-t border-[#eaeded] flex flex-col sm:flex-row items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={testing || saving}
+                  className="w-full sm:w-auto h-9 px-4 bg-white hover:bg-slate-50 text-[#0073bb] border border-[#0073bb] text-xs font-semibold rounded flex items-center justify-center space-x-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+                >
+                  <span>{testing ? "⏳" : "⚡"}</span>
+                  <span>{testing ? "Validando no Peer..." : "Testar Conexão e Credenciais"}</span>
+                </button>
+
+                <div className="w-full sm:w-auto flex items-center space-x-3">
+                  {isEnabled && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleSyncAll}
+                        disabled={syncing || saving || testing}
+                        className="w-full sm:w-auto h-9 px-4 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-600 text-xs font-semibold rounded flex items-center justify-center space-x-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+                      >
+                        <span>{syncing ? "⏳" : "🔄"}</span>
+                        <span>{syncing ? "Sincronizando..." : "Sincronizar Arquivos"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleDisableReplication}
+                        disabled={saving || testing || syncing}
+                        className="w-full sm:w-auto h-9 px-4 bg-white hover:bg-red-50 text-[#d13212] border border-[#d13212] text-xs font-semibold rounded flex items-center justify-center space-x-1.5 shadow-xs transition cursor-pointer disabled:opacity-50"
+                      >
+                        <span>🛑</span>
+                        <span>Desativar Replicação</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleSaveAndEnable}
+                    disabled={saving || testing || syncing}
+                    className="w-full sm:w-auto h-9 px-5 bg-[#0073bb] hover:bg-[#005a92] text-white text-xs font-semibold rounded flex items-center justify-center space-x-2 shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    <span>{saving ? "⏳" : "💾"}</span>
+                    <span>{saving ? "Salvando..." : (isEnabled ? "Atualizar e Aplicar" : "Salvar e Ativar Replicação P2P")}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Architecture Flow Visual */}
+          <div className="bg-white border border-[#eaeded] rounded shadow-sm p-6 space-y-4">
+            <h3 className="text-xs font-bold text-[#16191f] uppercase tracking-wider text-[#545b64]">
+              Topologia do Pipeline de Replicação em Tempo Real
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-center text-xs">
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded space-y-1">
+                <div className="text-base">1️⃣ Cliente S3</div>
+                <div className="font-semibold text-[#16191f]">Upload / Mutação</div>
+                <p className="text-[10px] text-slate-500">PUT /bucket/objeto gravado localmente (Extents + WAL)</p>
+              </div>
+
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded space-y-1">
+                <div className="text-base">2️⃣ Fila Tokio MPSC</div>
+                <div className="font-semibold text-blue-800">Canal Não-Bloqueante</div>
+                <p className="text-[10px] text-blue-600">Cliente recebe 200 OK sem aguardar latência inter-servidores</p>
+              </div>
+
+              <div className="p-4 bg-indigo-50 border border-indigo-200 rounded space-y-1">
+                <div className="text-base">3️⃣ Assinatura SigV4</div>
+                <div className="font-semibold text-indigo-800">Segurança de Saída</div>
+                <p className="text-[10px] text-indigo-600">Cálculo de SHA-256 e cabeçalho Authorization com credenciais</p>
+              </div>
+
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded space-y-1">
+                <div className="text-base">4️⃣ Peer Secundário</div>
+                <div className="font-semibold text-emerald-800">Gravação Imediata</div>
+                <p className="text-[10px] text-emerald-600">Reconhece o anti-loop, armazena e atualiza RAM em tempo real</p>
               </div>
             </div>
           </div>
