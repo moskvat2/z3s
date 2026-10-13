@@ -16,4 +16,4 @@ pub use extent::{BlockHeader, ExtentError, ExtentFile, ExtentHeader, FormatError
 pub use healer::{AutoHealingEngine, HealingError, HealingReport};
 pub use index::{ShardLocation, StorageIndex};
 pub use scrubber::{BitrotScrubber, ScrubReport};
-pub use wal::{WalError, WalRecord, WriteAheadLog};
+pub use wal::{GroupCommitWal, WalError, WalRecord, WriteAheadLog};

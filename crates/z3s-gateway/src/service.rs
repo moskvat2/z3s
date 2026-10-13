@@ -15,6 +15,7 @@ use crate::xml::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 use z3s_auth::credentials::CredentialsProvider;
@@ -251,6 +252,8 @@ pub struct S3GatewayService {
     pub metadata_dir: Option<std::path::PathBuf>,
     buckets: RwLock<HashMap<String, BucketInfo>>,
     objects: RwLock<HashMap<String, Vec<ObjectManifest>>>,
+    objects_dirty: AtomicBool,
+    objects_persisting: AtomicBool,
     multiparts: RwLock<HashMap<String, ActiveMultipartUpload>>,
     policies: RwLock<HashMap<String, BucketPolicy>>,
     encryption_configs: RwLock<HashMap<String, ServerSideEncryptionConfiguration>>,
@@ -427,6 +430,8 @@ impl S3GatewayService {
             metadata_dir,
             buckets: RwLock::new(buckets),
             objects: RwLock::new(objects),
+            objects_dirty: AtomicBool::new(false),
+            objects_persisting: AtomicBool::new(false),
             multiparts: RwLock::new(HashMap::new()),
             policies: RwLock::new(policies),
             encryption_configs: RwLock::new(encryption_configs),
@@ -480,41 +485,91 @@ impl S3GatewayService {
 
     pub fn persist_buckets(&self) {
         if let Some(ref dir) = self.metadata_dir {
-            let map = self.buckets.read().unwrap();
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+            let json = {
+                let map = self.buckets.read().unwrap();
+                serde_json::to_vec(&*map)
+            };
+            if let Ok(json) = json {
                 let _ = Self::atomic_write_metadata(&dir.join("buckets.json"), &json);
             }
         }
     }
 
     pub fn persist_objects(&self) {
-        if let Some(ref dir) = self.metadata_dir {
-            let map = self.objects.read().unwrap();
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
-                let _ = Self::atomic_write_metadata(&dir.join("objects.json"), &json);
-            }
+        if self.metadata_dir.is_none() {
+            return;
+        }
 
-            // Particionamento atômico por bucket para isolamento e resiliência
+        self.objects_dirty.store(true, Ordering::SeqCst);
+
+        // Se outra thread já estiver ativamente persistindo os objetos,
+        // marcamos como dirty e retornamos imediatamente. O committer ativo
+        // processará o snapshot mais recente em seu loop de coalescência.
+        if self
+            .objects_persisting
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        // Loop enquanto novas gravações concorrentes marcarem objects_dirty
+        while self.objects_dirty.swap(false, Ordering::SeqCst) {
+            self.do_persist_objects();
+        }
+
+        self.objects_persisting.store(false, Ordering::SeqCst);
+
+        // Previne race condition se dirty foi setado logo antes de resetar objects_persisting
+        if self.objects_dirty.load(Ordering::SeqCst) {
+            self.persist_objects();
+        }
+    }
+
+    fn do_persist_objects(&self) {
+        let dir = match self.metadata_dir.as_ref() {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Copiamos os dados com o lock de leitura mantido apenas pelo tempo mínimo em memória
+        let (global_json, by_bucket_data) = {
+            let map = self.objects.read().unwrap();
+            let json = serde_json::to_vec(&*map);
+
             let mut by_bucket: HashMap<String, HashMap<String, Vec<ObjectManifest>>> = HashMap::new();
             for (key, manifests) in map.iter() {
                 if let Some((b, _)) = key.split_once('/') {
-                    by_bucket.entry(b.to_string()).or_default().insert(key.clone(), manifests.clone());
+                    by_bucket
+                        .entry(b.to_string())
+                        .or_default()
+                        .insert(key.clone(), manifests.clone());
                 }
             }
-            let buckets_dir = dir.join("buckets");
-            for (bucket_name, bucket_objects) in by_bucket {
-                let bucket_obj_file = buckets_dir.join(&bucket_name).join("objects.json");
-                if let Ok(b_json) = serde_json::to_vec_pretty(&bucket_objects) {
-                    let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
-                }
+            (json, by_bucket)
+        };
+
+        // Operações de disco (I/O, fsync) são executadas SEM reter nenhum lock em self.objects
+        if let Ok(json) = global_json {
+            let _ = Self::atomic_write_metadata(&dir.join("objects.json"), &json);
+        }
+
+        let buckets_dir = dir.join("buckets");
+        for (bucket_name, bucket_objects) in by_bucket_data {
+            let bucket_obj_file = buckets_dir.join(&bucket_name).join("objects.json");
+            if let Ok(b_json) = serde_json::to_vec(&bucket_objects) {
+                let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
             }
         }
     }
 
     pub fn persist_policies(&self) {
         if let Some(ref dir) = self.metadata_dir {
-            let map = self.policies.read().unwrap();
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+            let json = {
+                let map = self.policies.read().unwrap();
+                serde_json::to_vec(&*map)
+            };
+            if let Ok(json) = json {
                 let _ = Self::atomic_write_metadata(&dir.join("policies.json"), &json);
             }
         }
@@ -522,8 +577,11 @@ impl S3GatewayService {
 
     pub fn persist_encryption(&self) {
         if let Some(ref dir) = self.metadata_dir {
-            let map = self.encryption_configs.read().unwrap();
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+            let json = {
+                let map = self.encryption_configs.read().unwrap();
+                serde_json::to_vec(&*map)
+            };
+            if let Ok(json) = json {
                 let _ = Self::atomic_write_metadata(&dir.join("encryption.json"), &json);
             }
         }
@@ -531,8 +589,11 @@ impl S3GatewayService {
 
     pub fn persist_cors(&self) {
         if let Some(ref dir) = self.metadata_dir {
-            let map = self.cors_configs.read().unwrap();
-            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+            let json = {
+                let map = self.cors_configs.read().unwrap();
+                serde_json::to_vec(&*map)
+            };
+            if let Ok(json) = json {
                 let _ = Self::atomic_write_metadata(&dir.join("cors.json"), &json);
             }
         }
@@ -540,14 +601,17 @@ impl S3GatewayService {
 
     pub fn persist_lifecycles(&self) {
         if let Some(ref dir) = self.metadata_dir {
-            let mut map = HashMap::new();
-            let b_guard = self.buckets.read().unwrap();
-            for b in b_guard.keys() {
-                if let Some(cfg) = self.lifecycle_engine.get_configuration(b) {
-                    map.insert(b.clone(), cfg);
+            let json = {
+                let mut map = HashMap::new();
+                let b_guard = self.buckets.read().unwrap();
+                for b in b_guard.keys() {
+                    if let Some(cfg) = self.lifecycle_engine.get_configuration(b) {
+                        map.insert(b.clone(), cfg);
+                    }
                 }
-            }
-            if let Ok(json) = serde_json::to_vec_pretty(&map) {
+                serde_json::to_vec(&map)
+            };
+            if let Ok(json) = json {
                 let _ = Self::atomic_write_metadata(&dir.join("lifecycles.json"), &json);
             }
         }
@@ -2310,35 +2374,39 @@ impl S3GatewayService {
         };
 
         let total_shards = self.erasure.total_shards() as u32;
-        let mut shard_pointers = Vec::new();
+        let all_shards = encoded.all_shards();
+        let mut shard_tuples = Vec::with_capacity(all_shards.len());
+        let mut shard_meta = Vec::with_capacity(all_shards.len());
 
-        for (i, shard_bytes) in encoded.all_shards().into_iter().enumerate() {
+        for (i, shard_bytes) in all_shards.iter().enumerate() {
             let shard_id = Uuid::new_v4();
             let is_parity = i >= self.erasure.data_shards();
+            shard_tuples.push((shard_id, i as u32, total_shards, shard_bytes.as_slice()));
+            shard_meta.push((shard_id, i as u32, is_parity));
+        }
 
-            let location = match self
-                .storage
-                .write_shard(shard_id, i as u32, total_shards, &shard_bytes)
-            {
-                Ok(loc) => loc,
-                Err(e) => {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::InternalError,
-                        format!("Erro de I/O em disco: {}", e),
-                        None,
-                    )
-                }
-            };
+        let locations = match self.storage.write_shards_batch(&shard_tuples) {
+            Ok(locs) => locs,
+            Err(e) => {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::InternalError,
+                    format!("Erro de I/O em disco: {}", e),
+                    None,
+                );
+            }
+        };
 
+        let mut shard_pointers = Vec::with_capacity(locations.len());
+        for (loc, (shard_id, shard_index, is_parity)) in locations.into_iter().zip(shard_meta) {
             shard_pointers.push(ShardPointer {
                 shard_id: ShardId(shard_id),
-                shard_index: i as u32,
+                shard_index,
                 is_parity,
                 node_id: self.node_id,
-                extent_id: location.extent_id,
-                offset_in_extent: location.offset_in_extent,
-                length: location.payload_length,
-                blake3_checksum: location.checksum_blake3,
+                extent_id: loc.extent_id,
+                offset_in_extent: loc.offset_in_extent,
+                length: loc.payload_length,
+                blake3_checksum: loc.checksum_blake3,
             });
         }
 
@@ -3611,35 +3679,39 @@ impl S3GatewayService {
         };
 
         let total_shards = self.erasure.total_shards() as u32;
-        let mut shard_pointers = Vec::new();
+        let all_shards = encoded.all_shards();
+        let mut shard_tuples = Vec::with_capacity(all_shards.len());
+        let mut shard_meta = Vec::with_capacity(all_shards.len());
 
-        for (i, shard_bytes) in encoded.all_shards().into_iter().enumerate() {
+        for (i, shard_bytes) in all_shards.iter().enumerate() {
             let shard_id = Uuid::new_v4();
             let is_parity = i >= self.erasure.data_shards();
+            shard_tuples.push((shard_id, i as u32, total_shards, shard_bytes.as_slice()));
+            shard_meta.push((shard_id, i as u32, is_parity));
+        }
 
-            let location = match self
-                .storage
-                .write_shard(shard_id, i as u32, total_shards, &shard_bytes)
-            {
-                Ok(loc) => loc,
-                Err(e) => {
-                    return GatewayHttpResponse::error(
-                        S3ErrorCode::InternalError,
-                        format!("Erro de I/O em disco: {}", e),
-                        None,
-                    );
-                }
-            };
+        let locations = match self.storage.write_shards_batch(&shard_tuples) {
+            Ok(locs) => locs,
+            Err(e) => {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::InternalError,
+                    format!("Erro de I/O em disco: {}", e),
+                    None,
+                );
+            }
+        };
 
+        let mut shard_pointers = Vec::with_capacity(locations.len());
+        for (loc, (shard_id, shard_index, is_parity)) in locations.into_iter().zip(shard_meta) {
             shard_pointers.push(ShardPointer {
                 shard_id: ShardId(shard_id),
-                shard_index: i as u32,
+                shard_index,
                 is_parity,
                 node_id: self.node_id,
-                extent_id: location.extent_id,
-                offset_in_extent: location.offset_in_extent,
-                length: location.payload_length,
-                blake3_checksum: location.checksum_blake3,
+                extent_id: loc.extent_id,
+                offset_in_extent: loc.offset_in_extent,
+                length: loc.payload_length,
+                blake3_checksum: loc.checksum_blake3,
             });
         }
 

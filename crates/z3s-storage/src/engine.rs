@@ -1,6 +1,6 @@
 use crate::extent::{ExtentError, ExtentFile};
 use crate::index::{ShardLocation, StorageIndex};
-use crate::wal::{WalError, WalRecord, WriteAheadLog};
+use crate::wal::{GroupCommitWal, WalError, WalRecord, WriteAheadLog};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ pub struct StorageEngine {
     root_dir: PathBuf,
     extent_capacity: u64,
     index: Arc<StorageIndex>,
-    wal: Mutex<WriteAheadLog>,
+    wal: GroupCommitWal,
     active_extent: Mutex<ExtentFile>,
     sealed_extents: Mutex<HashMap<Uuid, ExtentFile>>,
 }
@@ -48,7 +48,8 @@ impl StorageEngine {
         std::fs::create_dir_all(&extents_dir)?;
 
         let wal_path = root_dir.join("storage.wal");
-        let wal = WriteAheadLog::open(&wal_path)?;
+        let raw_wal = WriteAheadLog::open(&wal_path)?;
+        let wal = GroupCommitWal::new(raw_wal);
         let index = Arc::new(StorageIndex::new());
 
         // Replay do WAL para restaurar índice em memória
@@ -85,13 +86,81 @@ impl StorageEngine {
             root_dir,
             extent_capacity,
             index,
-            wal: Mutex::new(wal),
+            wal,
             active_extent: Mutex::new(active_extent),
             sealed_extents: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Grava um Shard atomicamente com registro no WAL e no Extent ativo
+    /// Grava um lote de Shards com persistência física em extent e um único Group Commit no WAL
+    pub fn write_shards_batch(
+        &self,
+        shards: &[(Uuid, u32, u32, &[u8])],
+    ) -> Result<Vec<ShardLocation>, StorageError> {
+        if shards.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut active_extent = self.active_extent.lock().unwrap();
+        let mut locations = Vec::with_capacity(shards.len());
+        let mut wal_records = Vec::with_capacity(shards.len());
+
+        for &(shard_id, shard_index, total_shards, payload) in shards {
+            // Se o extent atual estiver cheio, sela-o e cria um novo
+            let block_header = match active_extent.append_shard(shard_id, shard_index, total_shards, payload) {
+                Ok(header) => header,
+                Err(ExtentError::ExtentFull) => {
+                    let sealed_id = active_extent.header.extent_id;
+                    let sealed_path = active_extent.path.clone();
+                    let opened_sealed = ExtentFile::open(&sealed_path)?;
+
+                    let mut sealed_map = self.sealed_extents.lock().unwrap();
+                    sealed_map.insert(sealed_id, opened_sealed);
+
+                    let required_capacity = (payload.len() as u64 + 8192).max(self.extent_capacity);
+                    let new_extent_id = Uuid::new_v4();
+                    let new_extent_path = self.root_dir.join("extents").join(format!("{}.z3se", new_extent_id));
+                    *active_extent = ExtentFile::create(&new_extent_path, new_extent_id, required_capacity)?;
+
+                    active_extent.append_shard(shard_id, shard_index, total_shards, payload)?
+                }
+                Err(e) => return Err(StorageError::Extent(e)),
+            };
+
+            let location = ShardLocation {
+                shard_id,
+                extent_id: active_extent.header.extent_id,
+                offset_in_extent: block_header.offset_in_extent,
+                payload_length: block_header.payload_length,
+                checksum_blake3: block_header.checksum_blake3,
+            };
+
+            wal_records.push(WalRecord::ShardCommitted {
+                shard_id,
+                extent_id: location.extent_id,
+                offset_in_extent: location.offset_in_extent,
+                payload_length: location.payload_length,
+                checksum_blake3: location.checksum_blake3,
+            });
+
+            locations.push(location);
+        }
+
+        // Libera o lock do extent ativo antes de efetuar o sync do WAL
+        drop(active_extent);
+
+        // Grava TODO o lote no WAL com Group Commit
+        self.wal.append_group(&wal_records)?;
+
+        // Atualiza índice em memória
+        for location in &locations {
+            self.index.insert(location.clone());
+        }
+
+        Ok(locations)
+    }
+
+    /// Grava um Shard individualmente com registro no WAL e no Extent ativo
     pub fn write_shard(
         &self,
         shard_id: Uuid,
@@ -99,52 +168,14 @@ impl StorageEngine {
         total_shards: u32,
         payload: &[u8],
     ) -> Result<ShardLocation, StorageError> {
-        let mut active_extent = self.active_extent.lock().unwrap();
-
-        // Se o extent atual estiver cheio, sela-o e cria um novo
-        let block_header = match active_extent.append_shard(shard_id, shard_index, total_shards, payload) {
-            Ok(header) => header,
-            Err(ExtentError::ExtentFull) => {
-                let sealed_id = active_extent.header.extent_id;
-                let sealed_path = active_extent.path.clone();
-                let opened_sealed = ExtentFile::open(&sealed_path)?;
-
-                let mut sealed_map = self.sealed_extents.lock().unwrap();
-                sealed_map.insert(sealed_id, opened_sealed);
-
-                // Cria novo extent ativo garantindo capacidade suficiente para o payload
-                let required_capacity = (payload.len() as u64 + 8192).max(self.extent_capacity);
-                let new_extent_id = Uuid::new_v4();
-                let new_extent_path = self.root_dir.join("extents").join(format!("{}.z3se", new_extent_id));
-                *active_extent = ExtentFile::create(&new_extent_path, new_extent_id, required_capacity)?;
-
-                active_extent.append_shard(shard_id, shard_index, total_shards, payload)?
-            }
-            Err(e) => return Err(StorageError::Extent(e)),
-        };
-
-        let location = ShardLocation {
-            shard_id,
-            extent_id: active_extent.header.extent_id,
-            offset_in_extent: block_header.offset_in_extent,
-            payload_length: block_header.payload_length,
-            checksum_blake3: block_header.checksum_blake3,
-        };
-
-        // Grava no WAL para garantir crash-consistency
-        let mut wal = self.wal.lock().unwrap();
-        wal.append(&WalRecord::ShardCommitted {
-            shard_id,
-            extent_id: location.extent_id,
-            offset_in_extent: location.offset_in_extent,
-            payload_length: location.payload_length,
-            checksum_blake3: location.checksum_blake3,
-        })?;
-
-        // Atualiza índice em memória
-        self.index.insert(location);
-
-        Ok(location)
+        let batch = [(shard_id, shard_index, total_shards, payload)];
+        let mut locs = self.write_shards_batch(&batch)?;
+        locs.pop().ok_or_else(|| {
+            StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Falha ao gravar shard",
+            ))
+        })
     }
 
     /// Lê o payload completo de um Shard e valida sua integridade via BLAKE3 on-the-fly
@@ -205,8 +236,8 @@ impl StorageEngine {
     /// Deleta logicamente um Shard e registra no WAL
     pub fn delete_shard(&self, shard_id: &Uuid) -> Result<(), StorageError> {
         if self.index.remove(shard_id).is_some() {
-            let mut wal = self.wal.lock().unwrap();
-            wal.append(&WalRecord::ShardDeleted { shard_id: *shard_id })?;
+            self.wal
+                .append_group(&[WalRecord::ShardDeleted { shard_id: *shard_id }])?;
         }
         Ok(())
     }
@@ -305,18 +336,18 @@ impl StorageEngine {
             }
 
             // Registra migrações no WAL e atualiza índice atômico
-            let mut wal = self.wal.lock().unwrap();
+            let mut wal_records = Vec::with_capacity(relocated.len());
             for new_loc in &relocated {
-                wal.append(&WalRecord::ShardCommitted {
+                wal_records.push(WalRecord::ShardCommitted {
                     shard_id: new_loc.shard_id,
                     extent_id: new_loc.extent_id,
                     offset_in_extent: new_loc.offset_in_extent,
                     payload_length: new_loc.payload_length,
                     checksum_blake3: new_loc.checksum_blake3,
-                })?;
+                });
                 self.index.insert(new_loc.clone());
             }
-            drop(wal);
+            self.wal.append_group(&wal_records)?;
 
             // Substitui no mapa de extents selados e deleta arquivo antigo
             let mut sealed_map = self.sealed_extents.lock().unwrap();
@@ -346,9 +377,7 @@ impl StorageEngine {
                 let _ = std::fs::remove_file(&old_active_path);
                 report.bytes_reclaimed += old_active_len.saturating_sub(4096);
             }
-            if let Ok(mut wal) = self.wal.lock() {
-                let _ = wal.truncate();
-            }
+            let _ = self.wal.truncate();
         }
 
         Ok(report)
@@ -440,5 +469,28 @@ mod tests {
         let recovered_engine = StorageEngine::open(temp_dir.path(), 10 * 1024 * 1024).unwrap();
         let read_data = recovered_engine.read_shard(&shard_id).unwrap();
         assert_eq!(read_data, payload);
+    }
+
+    #[test]
+    fn test_storage_engine_write_shards_batch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let engine = StorageEngine::open(temp_dir.path(), 10 * 1024 * 1024).unwrap();
+
+        let s1 = Uuid::new_v4();
+        let s2 = Uuid::new_v4();
+        let s3 = Uuid::new_v4();
+
+        let batch = [
+            (s1, 0, 3, b"Shard batch 1".as_slice()),
+            (s2, 1, 3, b"Shard batch 2".as_slice()),
+            (s3, 2, 3, b"Shard batch 3".as_slice()),
+        ];
+
+        let locs = engine.write_shards_batch(&batch).unwrap();
+        assert_eq!(locs.len(), 3);
+
+        assert_eq!(engine.read_shard(&s1).unwrap(), b"Shard batch 1");
+        assert_eq!(engine.read_shard(&s2).unwrap(), b"Shard batch 2");
+        assert_eq!(engine.read_shard(&s3).unwrap(), b"Shard batch 3");
     }
 }
