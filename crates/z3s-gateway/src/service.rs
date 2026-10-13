@@ -331,10 +331,21 @@ impl S3GatewayService {
             if objects_file.exists() {
                 if let Ok(data) = std::fs::read_to_string(&objects_file) {
                     if let Ok(loaded) = serde_json::from_str::<HashMap<String, Vec<ObjectManifest>>>(&data) {
-                        objects = loaded;
+                        for (k, v) in loaded {
+                            // Ignora chaves pertencentes a buckets que foram excluídos
+                            if let Some((b, _)) = k.split_once('/') {
+                                if buckets.contains_key(b) {
+                                    objects.insert(k, v);
+                                }
+                            }
+                        }
                     } else if let Ok(old_objects) = serde_json::from_str::<HashMap<String, ObjectManifest>>(&data) {
                         for (k, v) in old_objects {
-                            objects.insert(k, vec![v]);
+                            if let Some((b, _)) = k.split_once('/') {
+                                if buckets.contains_key(b) {
+                                    objects.insert(k, vec![v]);
+                                }
+                            }
                         }
                     }
                 }
@@ -344,6 +355,12 @@ impl S3GatewayService {
             if buckets_dir.exists() {
                 if let Ok(entries) = std::fs::read_dir(&buckets_dir) {
                     for entry in entries.flatten() {
+                        let bucket_name = entry.file_name().to_string_lossy().to_string();
+                        // Se o bucket não existe em buckets.json, limpa diretório órfão do disco e ignora
+                        if !buckets.contains_key(&bucket_name) {
+                            let _ = std::fs::remove_dir_all(entry.path());
+                            continue;
+                        }
                         let path = entry.path().join("objects.json");
                         if path.exists() {
                             if let Ok(data) = std::fs::read_to_string(&path) {
@@ -548,7 +565,7 @@ impl S3GatewayService {
         };
 
         // Copiamos os dados com o lock de leitura mantido apenas pelo tempo mínimo em memória
-        let (global_json, by_bucket_data) = {
+        let (global_json, by_bucket_data, existing_buckets) = {
             let map = self.objects.read().unwrap();
             let json = serde_json::to_vec(&*map);
 
@@ -561,7 +578,9 @@ impl S3GatewayService {
                         .insert(key.clone(), manifests.clone());
                 }
             }
-            (json, by_bucket)
+            let b_guard = self.buckets.read().unwrap();
+            let existing: HashSet<String> = b_guard.keys().cloned().collect();
+            (json, by_bucket, existing)
         };
 
         // Operações de disco (I/O, fsync) são executadas SEM reter nenhum lock em self.objects
@@ -570,10 +589,41 @@ impl S3GatewayService {
         }
 
         let buckets_dir = dir.join("buckets");
+        let _ = std::fs::create_dir_all(&buckets_dir);
+
+        // 1. Grava os catálogos dos buckets que existem e possuem objetos
         for (bucket_name, bucket_objects) in by_bucket_data {
-            let bucket_obj_file = buckets_dir.join(&bucket_name).join("objects.json");
-            if let Ok(b_json) = serde_json::to_vec(&bucket_objects) {
-                let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
+            if existing_buckets.contains(&bucket_name) {
+                let bucket_obj_file = buckets_dir.join(&bucket_name).join("objects.json");
+                if let Ok(b_json) = serde_json::to_vec(&bucket_objects) {
+                    let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
+                }
+            }
+        }
+
+        // 2. Garante que buckets existentes que foram esvaziados tenham catálogo vazio gravado em disco
+        for bucket_name in &existing_buckets {
+            let bucket_obj_file = buckets_dir.join(bucket_name).join("objects.json");
+            let has_objects = {
+                let map = self.objects.read().unwrap();
+                let prefix = format!("{}/", bucket_name);
+                map.keys().any(|k| k.starts_with(&prefix))
+            };
+            if !has_objects {
+                let empty_map: HashMap<String, Vec<ObjectManifest>> = HashMap::new();
+                if let Ok(b_json) = serde_json::to_vec(&empty_map) {
+                    let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
+                }
+            }
+        }
+
+        // 3. Remove do disco diretórios de buckets que já foram deletados
+        if let Ok(entries) = std::fs::read_dir(&buckets_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !existing_buckets.contains(&name) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
             }
         }
     }
@@ -2283,21 +2333,35 @@ impl S3GatewayService {
             );
         }
 
-        let objects = self.objects.read().unwrap();
         let bucket_prefix = format!("{}/", bucket);
-        let has_objects = objects.iter().any(|(k, v)| k.starts_with(&bucket_prefix) && !v.is_empty());
-        if has_objects {
-            return GatewayHttpResponse::error(
-                S3ErrorCode::BucketNotEmpty,
-                "O bucket a ser deletado não está vazio",
-                Some(bucket.to_string()),
-            );
+        {
+            let objects = self.objects.read().unwrap();
+            let has_objects = objects.iter().any(|(k, v)| k.starts_with(&bucket_prefix) && !v.is_empty());
+            if has_objects {
+                return GatewayHttpResponse::error(
+                    S3ErrorCode::BucketNotEmpty,
+                    "O bucket a ser deletado não está vazio",
+                    Some(bucket.to_string()),
+                );
+            }
         }
-        drop(objects);
 
         map.remove(bucket);
         drop(map);
         self.persist_buckets();
+
+        // 1. Remove qualquer diretório residual particionado do bucket em disco
+        if let Some(ref dir) = self.metadata_dir {
+            let bucket_dir = dir.join("buckets").join(bucket);
+            let _ = std::fs::remove_dir_all(&bucket_dir);
+        }
+
+        // 2. Remove quaisquer chaves do bucket em memória e atualiza objects.json
+        {
+            let mut obj_write = self.objects.write().unwrap();
+            obj_write.retain(|k, _| !k.starts_with(&bucket_prefix));
+        }
+        self.persist_objects();
 
         let mut headers = HashMap::new();
         headers.insert("Content-Length".to_string(), "0".to_string());
@@ -4919,6 +4983,65 @@ mod tests {
         assert!(body_str.contains("z3s_buckets_total 1"));
         assert!(body_str.contains("z3s_objects_total 1"));
         assert!(body_str.contains("z3s_storage_logical_bytes 20"));
+    }
+
+    #[test]
+    fn test_recreated_bucket_does_not_resurrect_deleted_objects() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        let meta_dir = temp_dir.path().join("meta");
+
+        let storage = Arc::new(StorageEngine::open(&data_dir, 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+
+        let service = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage.clone(),
+            erasure.clone(),
+            credentials.clone(),
+            Some(meta_dir.clone()),
+        );
+
+        let headers = HashMap::new();
+
+        // 1. Cria bucket 'new-bucket' e envia um arquivo
+        let resp_create = service.handle_request("PUT", "/new-bucket", None, &headers, &[]);
+        assert_eq!(resp_create.status, 200);
+
+        let resp_put = service.handle_request("PUT", "/new-bucket/foto.jpg", None, &headers, b"DADOS DA FOTO");
+        assert_eq!(resp_put.status, 200);
+
+        // 2. Apaga o arquivo
+        let resp_del_obj = service.handle_request("DELETE", "/new-bucket/foto.jpg", None, &headers, &[]);
+        assert_eq!(resp_del_obj.status, 204);
+
+        // 3. Apaga o bucket por completo
+        let resp_del_bkt = service.handle_request("DELETE", "/new-bucket", None, &headers, &[]);
+        assert_eq!(resp_del_bkt.status, 204);
+
+        // 4. Simula restart completo do servidor carregando do disco
+        let service_after_restart = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage,
+            erasure,
+            credentials,
+            Some(meta_dir),
+        );
+
+        // 5. Recria o bucket com o mesmo nome 'new-bucket'
+        let resp_recreate = service_after_restart.handle_request("PUT", "/new-bucket", None, &headers, &[]);
+        assert_eq!(resp_recreate.status, 200);
+
+        // 6. Lista os objetos do novo bucket: DEVE ESTAR VAZIO!
+        let resp_list = service_after_restart.handle_request("GET", "/new-bucket", None, &headers, &[]);
+        assert_eq!(resp_list.status, 200);
+        let list_xml = String::from_utf8_lossy(&resp_list.body);
+        assert!(!list_xml.contains("foto.jpg"), "Objeto deletado ressuscitou no bucket recriado!");
+
+        // 7. GET no objeto antigo DEVE retornar 404 NoSuchKey
+        let resp_get = service_after_restart.handle_request("GET", "/new-bucket/foto.jpg", None, &headers, &[]);
+        assert_eq!(resp_get.status, 404);
     }
 }
 
