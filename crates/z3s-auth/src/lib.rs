@@ -5,5 +5,7 @@
 pub mod credentials;
 pub mod sigv4;
 
-pub use credentials::{Credentials, CredentialsProvider, InMemoryCredentialsStore};
+pub use credentials::{
+    Credentials, CredentialsProvider, InMemoryCredentialsStore, PersistentCredentialsStore,
+};
 pub use sigv4::{SigV4AuthContext, SigV4Engine, SigV4Error, SIGV4_ALGORITHM, UNSIGNED_PAYLOAD};

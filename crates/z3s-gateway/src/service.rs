@@ -323,6 +323,24 @@ impl S3GatewayService {
                     }
                 }
             }
+            // Carrega catálogos particionados por bucket se disponíveis
+            let buckets_dir = dir.join("buckets");
+            if buckets_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&buckets_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path().join("objects.json");
+                        if path.exists() {
+                            if let Ok(data) = std::fs::read_to_string(&path) {
+                                if let Ok(loaded) = serde_json::from_str::<HashMap<String, Vec<ObjectManifest>>>(&data) {
+                                    for (k, v) in loaded {
+                                        objects.entry(k).or_insert(v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let policies_file = dir.join("policies.json");
             if policies_file.exists() {
                 if let Ok(data) = std::fs::read_to_string(&policies_file) {
@@ -432,12 +450,39 @@ impl S3GatewayService {
         self.persist_replication();
     }
 
+    /// Gravação atômica, segura e transacional de metadados em disco (crash-safe via fsync + rename)
+    pub fn atomic_write_metadata(target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temp_name = format!(
+            ".{}.tmp.{}",
+            target.file_name().and_then(|n| n.to_str()).unwrap_or("meta"),
+            uuid::Uuid::new_v4().simple()
+        );
+        let temp_path = target.with_file_name(temp_name);
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp_path)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&temp_path, target)?;
+
+        #[cfg(unix)]
+        if let Some(parent) = target.parent() {
+            if let Ok(dir_file) = std::fs::File::open(parent) {
+                let _ = dir_file.sync_all();
+            }
+        }
+        Ok(())
+    }
+
     pub fn persist_buckets(&self) {
         if let Some(ref dir) = self.metadata_dir {
             let map = self.buckets.read().unwrap();
-            if let Ok(json) = serde_json::to_string_pretty(&*map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("buckets.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+                let _ = Self::atomic_write_metadata(&dir.join("buckets.json"), &json);
             }
         }
     }
@@ -445,9 +490,23 @@ impl S3GatewayService {
     pub fn persist_objects(&self) {
         if let Some(ref dir) = self.metadata_dir {
             let map = self.objects.read().unwrap();
-            if let Ok(json) = serde_json::to_string_pretty(&*map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("objects.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+                let _ = Self::atomic_write_metadata(&dir.join("objects.json"), &json);
+            }
+
+            // Particionamento atômico por bucket para isolamento e resiliência
+            let mut by_bucket: HashMap<String, HashMap<String, Vec<ObjectManifest>>> = HashMap::new();
+            for (key, manifests) in map.iter() {
+                if let Some((b, _)) = key.split_once('/') {
+                    by_bucket.entry(b.to_string()).or_default().insert(key.clone(), manifests.clone());
+                }
+            }
+            let buckets_dir = dir.join("buckets");
+            for (bucket_name, bucket_objects) in by_bucket {
+                let bucket_obj_file = buckets_dir.join(&bucket_name).join("objects.json");
+                if let Ok(b_json) = serde_json::to_vec_pretty(&bucket_objects) {
+                    let _ = Self::atomic_write_metadata(&bucket_obj_file, &b_json);
+                }
             }
         }
     }
@@ -455,9 +514,8 @@ impl S3GatewayService {
     pub fn persist_policies(&self) {
         if let Some(ref dir) = self.metadata_dir {
             let map = self.policies.read().unwrap();
-            if let Ok(json) = serde_json::to_string_pretty(&*map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("policies.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+                let _ = Self::atomic_write_metadata(&dir.join("policies.json"), &json);
             }
         }
     }
@@ -465,9 +523,8 @@ impl S3GatewayService {
     pub fn persist_encryption(&self) {
         if let Some(ref dir) = self.metadata_dir {
             let map = self.encryption_configs.read().unwrap();
-            if let Ok(json) = serde_json::to_string_pretty(&*map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("encryption.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+                let _ = Self::atomic_write_metadata(&dir.join("encryption.json"), &json);
             }
         }
     }
@@ -475,9 +532,8 @@ impl S3GatewayService {
     pub fn persist_cors(&self) {
         if let Some(ref dir) = self.metadata_dir {
             let map = self.cors_configs.read().unwrap();
-            if let Ok(json) = serde_json::to_string_pretty(&*map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("cors.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&*map) {
+                let _ = Self::atomic_write_metadata(&dir.join("cors.json"), &json);
             }
         }
     }
@@ -491,9 +547,8 @@ impl S3GatewayService {
                     map.insert(b.clone(), cfg);
                 }
             }
-            if let Ok(json) = serde_json::to_string_pretty(&map) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("lifecycles.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&map) {
+                let _ = Self::atomic_write_metadata(&dir.join("lifecycles.json"), &json);
             }
         }
     }
@@ -529,9 +584,8 @@ impl S3GatewayService {
                 })
             };
 
-            if let Ok(json) = serde_json::to_string_pretty(&to_save) {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join("replication.json"), json);
+            if let Ok(json) = serde_json::to_vec_pretty(&to_save) {
+                let _ = Self::atomic_write_metadata(&dir.join("replication.json"), &json);
             }
         }
     }
@@ -4545,6 +4599,56 @@ mod tests {
         let val_check: serde_json::Value = serde_json::from_slice(&resp_check.body).unwrap();
         assert_eq!(val_check["enabled"], false);
         assert_eq!(val_check["status"], "DISABLED");
+    }
+
+    #[test]
+    fn test_atomic_metadata_persistence_and_bucket_partitioning() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        let meta_dir = temp_dir.path().join("meta");
+
+        let storage = Arc::new(StorageEngine::open(&data_dir, 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+        credentials.register("AKID", "SECRET");
+
+        let service = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage.clone(),
+            erasure.clone(),
+            credentials.clone(),
+            Some(meta_dir.clone()),
+        );
+
+        let headers = HashMap::new();
+
+        // 1. Cria Bucket
+        let resp_cb = service.handle_request("PUT", "/meu-bucket", None, &headers, &[]);
+        assert_eq!(resp_cb.status, 200);
+
+        // 2. PutObject
+        let body = b"Conteudo confidencial de producao";
+        let resp_po = service.handle_request("PUT", "/meu-bucket/arquivo.txt", None, &headers, body);
+        assert_eq!(resp_po.status, 200);
+
+        // 3. Valida que os arquivos atômicos foram persistidos no disco
+        assert!(meta_dir.join("buckets.json").exists());
+        assert!(meta_dir.join("objects.json").exists());
+        assert!(meta_dir.join("buckets").join("meu-bucket").join("objects.json").exists());
+
+        // 4. Reinicializa o serviço para simular restart e validar recarregamento
+        let service_reloaded = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage,
+            erasure,
+            credentials,
+            Some(meta_dir),
+        );
+
+        // Valida que o objeto existe e pode ser lido perfeitamente
+        let resp_go = service_reloaded.handle_request("GET", "/meu-bucket/arquivo.txt", None, &headers, &[]);
+        assert_eq!(resp_go.status, 200);
+        assert_eq!(resp_go.body.as_ref(), body);
     }
 }
 

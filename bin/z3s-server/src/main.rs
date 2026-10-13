@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
-use z3s_auth::credentials::InMemoryCredentialsStore;
+use z3s_auth::credentials::PersistentCredentialsStore;
 use z3s_erasure::ErasureEngine;
 use z3s_gateway::{HttpServer, ReplicationConfig, ReplicationEngine, S3GatewayService};
 use z3s_storage::{StorageEngine, DEFAULT_EXTENT_CAPACITY};
@@ -66,8 +66,13 @@ async fn main() -> anyhow::Result<()> {
     // 2. Inicializa o motor Reed-Solomon SIMD
     let erasure = Arc::new(ErasureEngine::new(cli.data_shards, cli.parity_shards)?);
 
-    // 3. Registra as credenciais configuradas
-    let credentials_store = Arc::new(InMemoryCredentialsStore::new());
+    // 3. Inicializa o catálogo de metadados e credenciais persistentes
+    let node_id = Uuid::new_v4();
+    let metadata_dir = cli.data_dir.join("metadata");
+    std::fs::create_dir_all(&metadata_dir)?;
+
+    let credentials_file = metadata_dir.join("credentials.json");
+    let credentials_store = Arc::new(PersistentCredentialsStore::open(&credentials_file)?);
     credentials_store.register(&cli.access_key, &cli.secret_key);
     // Registra aliases e credenciais padrões para desenvolvimento e compatibilidade
     credentials_store.register("z3sadmin", "z3sadminsecretkey");
@@ -75,9 +80,7 @@ async fn main() -> anyhow::Result<()> {
     credentials_store.register("root", "root123456");
     credentials_store.register("minioadmin", "minioadmin");
 
-    // 4. Cria o Gateway Service com persistência de metadados de catálogo
-    let node_id = Uuid::new_v4();
-    let metadata_dir = cli.data_dir.join("metadata");
+    // 4. Cria o Gateway Service com persistência atômica e particionamento de catálogo
     let gateway_service = Arc::new(S3GatewayService::new_with_metadata(
         node_id,
         storage,
