@@ -11,6 +11,8 @@ function App() {
   const [selectedBucket, setSelectedBucket] = useState(null);
   const [activeBucketTab, setActiveBucketTab] = useState("objects"); // 'objects', 'properties', 'permissions', 'metrics'
   const [toasts, setToasts] = useState([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const addToast = (message, type = "info") => {
     const id = Date.now() + Math.random();
@@ -29,10 +31,17 @@ function App() {
     AuthManager.clearSession();
     setSession(null);
     setSelectedBucket(null);
+    setMobileSidebarOpen(false);
     addToast("Sessão encerrada.", "info");
   };
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const handleToggleSidebar = () => {
+    if (window.innerWidth < 768) {
+      setMobileSidebarOpen(prev => !prev);
+    } else {
+      setSidebarCollapsed(prev => !prev);
+    }
+  };
 
   if (!session) {
     return <AwsSignInView onLogin={handleLogin} />;
@@ -44,20 +53,43 @@ function App() {
       <AwsGlobalHeader 
         session={session} 
         sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onToggleSidebar={handleToggleSidebar}
         onLogout={handleLogout}
         onNavigateHome={() => {
           setSelectedBucket(null);
           setCurrentTab("buckets");
+          setMobileSidebarOpen(false);
         }}
       />
 
       {/* 2. Main Content Body with Sidebar */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar Menu */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Mobile Backdrop & Drawer */}
+        {mobileSidebarOpen && (
+          <>
+            <div 
+              className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 md:hidden animate-fade-in"
+              onClick={() => setMobileSidebarOpen(false)}
+            />
+            <AwsSidebar
+              currentTab={currentTab}
+              collapsed={false}
+              isMobile={true}
+              onCloseMobile={() => setMobileSidebarOpen(false)}
+              onNavigate={(tab) => {
+                setSelectedBucket(null);
+                setCurrentTab(tab);
+                setMobileSidebarOpen(false);
+              }}
+            />
+          </>
+        )}
+
+        {/* Desktop Left Sidebar Menu */}
         <AwsSidebar
           currentTab={currentTab}
           collapsed={sidebarCollapsed}
+          isMobile={false}
           onNavigate={(tab) => {
             setSelectedBucket(null);
             setCurrentTab(tab);
@@ -65,8 +97,8 @@ function App() {
         />
 
         {/* Workspace Main Area */}
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-[1600px] w-full mx-auto space-y-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-6 pb-12">
+          <div className="max-w-[1600px] w-full mx-auto space-y-4 sm:space-y-6">
             {currentTab === "buckets" && (
               <AwsBucketsView 
                 onSelectBucket={(bucketName) => {
@@ -147,22 +179,22 @@ function AwsSignInView({ onLogin }) {
   return (
     <div className="min-h-screen bg-[#0f1b2a] flex flex-col justify-between font-sans">
       {/* Top Brand Bar */}
-      <header className="h-14 bg-[#161e2d] border-b border-[#2a384c] px-8 flex items-center">
+      <header className="h-14 bg-[#161e2d] border-b border-[#2a384c] px-4 sm:px-8 flex items-center">
         <div className="flex items-center space-x-3">
-          <svg className="w-8 h-8 text-[#2563eb]" viewBox="0 0 24 24" fill="currentColor">
+          <svg className="w-8 h-8 text-[#2563eb] shrink-0" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.6.1 2.78 1.41 2.78 2.96 0 1.65-1.35 3-3 3z"/>
           </svg>
-          <span className="text-white font-bold text-lg tracking-tight">Z3S Storage Console</span>
-          <span className="text-xs px-2 py-0.5 bg-[#2a384c] text-slate-300 rounded font-mono">AWS S3 Compatible</span>
+          <span className="text-white font-bold text-base sm:text-lg tracking-tight">Z3S Storage Console</span>
+          <span className="text-[11px] sm:text-xs px-2 py-0.5 bg-[#2a384c] text-slate-300 rounded font-mono hidden xs:inline sm:inline">AWS S3 Compatible</span>
         </div>
       </header>
 
       {/* Center Sign In Card */}
       <div className="flex-1 flex items-center justify-center p-4">
-        <div className="w-full max-w-[440px] bg-white rounded-lg shadow-2xl border border-slate-200 p-8">
+        <div className="w-full max-w-[440px] bg-white rounded-lg shadow-2xl border border-slate-200 p-6 sm:p-8">
           <div className="mb-6">
-            <h1 className="text-2xl font-bold text-[#16191f]">Sign in</h1>
-            <p className="text-sm text-[#545b64] mt-1">Z3S Root or IAM Credentials</p>
+            <h1 className="text-xl sm:text-2xl font-bold text-[#16191f]">Sign in</h1>
+            <p className="text-xs sm:text-sm text-[#545b64] mt-1">Z3S Root or IAM Credentials</p>
           </div>
 
           {error && (
@@ -252,7 +284,7 @@ function AwsSignInView({ onLogin }) {
       </div>
 
       {/* Footer */}
-      <footer className="h-10 bg-[#161e2d] px-8 flex items-center justify-between text-xs text-[#879596]">
+      <footer className="min-h-10 py-2.5 bg-[#161e2d] px-4 sm:px-8 flex flex-col sm:flex-row items-center justify-between text-[11px] sm:text-xs text-[#879596] gap-1 text-center sm:text-left">
         <span>&copy; 2026 Z3S Core Team. Todos os direitos reservados.</span>
         <span>Região: us-east-1 (Auto)</span>
       </footer>
@@ -265,14 +297,14 @@ function AwsSignInView({ onLogin }) {
 // ----------------------------------------------------------------------
 function AwsGlobalHeader({ session, sidebarCollapsed, onToggleSidebar, onLogout, onNavigateHome }) {
   return (
-    <header className="h-12 bg-[#161e2d] text-white px-4 flex items-center justify-between select-none shadow-md z-30 border-b border-[#232f3e]">
+    <header className="h-12 bg-[#161e2d] text-white px-3 sm:px-4 flex items-center justify-between select-none shadow-md z-30 border-b border-[#232f3e]">
       {/* Left: Sidebar Toggle + Brand */}
-      <div className="flex items-center space-x-3">
+      <div className="flex items-center space-x-2 sm:space-x-3">
         <button
           type="button"
           onClick={onToggleSidebar}
           className="p-1.5 rounded hover:bg-[#232f3e] text-slate-300 hover:text-white transition focus:outline-none"
-          title={sidebarCollapsed ? "Expandir Menu Lateral" : "Recolher Menu Lateral"}
+          title="Alternar Menu Lateral"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
@@ -281,29 +313,30 @@ function AwsGlobalHeader({ session, sidebarCollapsed, onToggleSidebar, onLogout,
 
         <button 
           onClick={onNavigateHome}
-          className="flex items-center space-x-2.5 hover:opacity-90 transition focus:outline-none"
+          className="flex items-center space-x-2 sm:space-x-2.5 hover:opacity-90 transition focus:outline-none"
         >
           <div className="w-6 h-6 bg-[#2563eb] rounded flex items-center justify-center font-bold text-xs text-white shadow-xs">
             S3
           </div>
-          <span className="font-bold text-sm tracking-tight text-white hidden sm:inline">Z3S Object Storage</span>
+          <span className="font-bold text-sm tracking-tight text-white hidden xs:inline sm:inline">Z3S Object Storage</span>
+          <span className="font-bold text-sm tracking-tight text-white inline xs:hidden sm:hidden">Z3S S3</span>
         </button>
       </div>
 
       {/* Right: Region & Account */}
-      <div className="flex items-center space-x-3 text-xs">
-        <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 bg-[#232f3e] border border-[#3e4f67] rounded text-slate-200">
+      <div className="flex items-center space-x-2 sm:space-x-3 text-xs">
+        <div className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 bg-[#232f3e] border border-[#3e4f67] rounded text-slate-200">
           <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
           <span>us-east-1 (Cluster RS 4+2)</span>
         </div>
 
         <div className="flex items-center space-x-2 pl-2 border-l border-[#2a384c]">
-          <span className="font-semibold text-slate-300 hidden sm:inline">
+          <span className="font-semibold text-slate-300 hidden sm:inline max-w-[120px] truncate">
             {session?.accessKey ? `${session.accessKey.substring(0, 10)}...` : "Admin"}
           </span>
           <button
             onClick={onLogout}
-            className="px-2.5 py-1 bg-[#232f3e] hover:bg-[#2e3e52] border border-[#3e4f67] rounded text-slate-200 transition font-medium"
+            className="px-2 sm:px-2.5 py-1 bg-[#232f3e] hover:bg-[#2e3e52] border border-[#3e4f67] rounded text-slate-200 transition font-medium text-xs whitespace-nowrap"
             title="Sair da Sessão"
           >
             Sign out
@@ -317,7 +350,7 @@ function AwsGlobalHeader({ session, sidebarCollapsed, onToggleSidebar, onLogout,
 // ----------------------------------------------------------------------
 // 2.1. AWS Left Sidebar Navigation Component
 // ----------------------------------------------------------------------
-function AwsSidebar({ currentTab, collapsed, onNavigate }) {
+function AwsSidebar({ currentTab, collapsed, onNavigate, isMobile, onCloseMobile }) {
   const navSections = [
     {
       title: "Amazon S3",
@@ -366,9 +399,92 @@ function AwsSidebar({ currentTab, collapsed, onNavigate }) {
     }
   ];
 
+  if (isMobile) {
+    return (
+      <aside className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#0f172a] text-slate-300 border-r border-[#1e293b] flex flex-col justify-between shadow-2xl animate-drawer-in select-none">
+        {/* Mobile Header with Brand & Close Button */}
+        <div className="h-12 px-4 flex items-center justify-between border-b border-[#1e293b] bg-[#161e2d]">
+          <div className="flex items-center space-x-2">
+            <div className="w-5 h-5 bg-[#2563eb] rounded flex items-center justify-center font-bold text-[10px] text-white">
+              S3
+            </div>
+            <span className="font-bold text-xs text-white">Z3S Object Storage</span>
+          </div>
+          <button
+            onClick={onCloseMobile}
+            className="p-1 rounded text-slate-400 hover:text-white hover:bg-[#232f3e] transition text-sm font-bold"
+            title="Fechar Menu"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Mobile Nav Items */}
+        <div className="p-3 space-y-5 overflow-y-auto flex-1">
+          {navSections.map((section, idx) => (
+            <div key={idx} className="space-y-1">
+              <div className="px-3 py-1 text-[10px] font-bold tracking-wider text-slate-400 uppercase">
+                {section.title}
+              </div>
+              <div className="space-y-1">
+                {section.items.map((item) => {
+                  const isActive = item.active;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        onNavigate(item.id);
+                        if (onCloseMobile) onCloseMobile();
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md text-xs font-medium transition ${
+                        isActive
+                          ? "bg-[#2563eb] text-white shadow-sm"
+                          : "text-slate-300 hover:bg-[#1e293b] hover:text-white"
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2.5">
+                        <span className="text-sm">{item.icon}</span>
+                        <span>{item.label}</span>
+                      </div>
+                      {item.badge && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                            isActive
+                              ? "bg-blue-400 text-blue-900"
+                              : "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                          }`}
+                        >
+                          {item.badge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Mobile Footer */}
+        <div className="p-3 border-t border-[#1e293b] bg-[#0b1120] text-xs space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <span>Cluster Engine</span>
+            <span className="text-emerald-400 font-bold flex items-center space-x-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>RS 4+2</span>
+            </span>
+          </div>
+          <div className="text-[10px] text-slate-400">
+            Append-Only Extents Direct I/O
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <aside
-      className={`bg-[#0f172a] text-slate-300 border-r border-[#1e293b] flex flex-col justify-between transition-all duration-300 select-none z-20 ${
+      className={`hidden md:flex bg-[#0f172a] text-slate-300 border-r border-[#1e293b] flex-col justify-between transition-all duration-300 select-none z-20 ${
         collapsed ? "w-16" : "w-64"
       }`}
     >
@@ -522,10 +638,10 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
       </div>
 
       {/* Page Title & Stats */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#16191f]">
-            Buckets <span className="text-[#545b64] font-normal text-lg">({filteredBuckets.length})</span>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#16191f]">
+            Buckets <span className="text-[#545b64] font-normal text-base sm:text-lg">({filteredBuckets.length})</span>
           </h1>
           <p className="text-xs text-[#545b64] mt-0.5">
             Buckets are containers for data stored in Z3S S3. Configure properties, access policies, and object versions.
@@ -535,7 +651,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
         <div className="flex items-center space-x-2">
           <button
             onClick={() => setShowCreateModal(true)}
-            className="h-9 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+            className="w-full sm:w-auto h-9 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
           >
             <span>+</span>
             <span>Create bucket</span>
@@ -546,9 +662,9 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
       {/* Cloudscape Table Card */}
       <div className="bg-white border border-[#eaeded] rounded shadow-sm overflow-hidden">
         {/* Table Action Bar */}
-        <div className="p-3.5 border-b border-[#eaeded] bg-white flex flex-wrap items-center justify-between gap-3">
+        <div className="p-3 sm:p-3.5 border-b border-[#eaeded] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           {/* Search */}
-          <div className="relative w-72">
+          <div className="relative w-full sm:w-72">
             <input 
               type="text"
               placeholder="Find bucket by name..."
@@ -573,38 +689,42 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
             <button
               disabled={selectedBucketNames.length !== 1}
               onClick={() => handleCopyUri(selectedBucketNames[0])}
-              className="h-8 px-3 bg-white hover:bg-[#fafafa] disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+              className="h-8 px-2.5 sm:px-3 bg-white hover:bg-[#fafafa] disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
               title="Copiar S3 URI do bucket selecionado"
             >
-              📋 Copy S3 URI
+              <span>📋</span>
+              <span className="hidden xs:inline sm:inline">Copy S3 URI</span>
             </button>
 
             {/* Empty Button */}
             <button
               disabled={selectedBucketNames.length !== 1}
               onClick={() => setEmptyTargetBucket(selectedBucketNames[0])}
-              className="h-8 px-3 bg-white hover:bg-amber-50 text-amber-700 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition"
+              className="h-8 px-2.5 sm:px-3 bg-white hover:bg-amber-50 text-amber-700 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition flex items-center space-x-1"
               title="Esvaziar todos os objetos do bucket"
             >
-              🧹 Empty
+              <span>🧹</span>
+              <span className="hidden xs:inline sm:inline">Empty</span>
             </button>
 
             {/* Delete Button */}
             <button
               disabled={selectedBucketNames.length !== 1}
               onClick={() => setDeleteTargetBucket(selectedBucketNames[0])}
-              className="h-8 px-3 bg-white hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition"
+              className="h-8 px-2.5 sm:px-3 bg-white hover:bg-red-50 text-red-600 disabled:opacity-40 disabled:hover:bg-white disabled:text-[#16191f] border border-[#aab7b8] rounded text-xs font-semibold transition flex items-center space-x-1"
               title="Excluir bucket selecionado"
             >
-              🗑️ Delete
+              <span>🗑️</span>
+              <span className="hidden xs:inline sm:inline">Delete</span>
             </button>
 
             {/* Refresh */}
             <button
               onClick={fetchBuckets}
-              className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+              className="h-8 px-2.5 sm:px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
             >
-              🔄 Refresh
+              <span>🔄</span>
+              <span className="hidden xs:inline sm:inline">Refresh</span>
             </button>
           </div>
         </div>
@@ -645,7 +765,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-[#16191f]">
+            <table className="w-full text-left text-xs text-[#16191f] min-w-[680px]">
               <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
                 <tr>
                   <th className="px-4 py-3 w-10">
@@ -710,7 +830,7 @@ function AwsBucketsView({ onSelectBucket, addToast }) {
                       <td className="px-4 py-3 text-[#545b64] font-mono text-[11px]">
                         {new Date(b.creationDate).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-right space-x-1.5">
+                      <td className="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
                         <button 
                           onClick={() => onSelectBucket(b.name)}
                           className="px-2.5 py-1 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
@@ -1022,32 +1142,32 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
       </div>
 
       {/* 2. Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center space-x-2 sm:space-x-3">
           <button 
             onClick={onBack}
-            className="h-8 px-2.5 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition"
+            className="h-8 px-2.5 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition shrink-0"
           >
             &larr; Buckets
           </button>
-          <h1 className="text-2xl font-bold text-[#16191f] flex items-center space-x-2">
+          <h1 className="text-xl sm:text-2xl font-bold text-[#16191f] flex items-center space-x-2 truncate">
             <span>🪣</span>
-            <span>{bucket}</span>
+            <span className="truncate">{bucket}</span>
           </h1>
         </div>
 
         {activeTab === "objects" && (
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
             <button
               onClick={() => setIsCreateFolderOpen(true)}
-              className="h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1.5"
+              className="flex-1 sm:flex-initial h-8 px-3 bg-white hover:bg-[#fafafa] border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center justify-center space-x-1.5"
             >
               <span>📁</span>
               <span>Create folder</span>
             </button>
             <button
               onClick={() => setIsUploadOpen(true)}
-              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+              className="flex-1 sm:flex-initial h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
             >
               <span>⬆</span>
               <span>Upload</span>
@@ -1057,12 +1177,12 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
       </div>
 
       {/* 3. Navigation Tabs */}
-      <div className="border-b border-[#eaeded] flex space-x-8 text-sm">
+      <div className="border-b border-[#eaeded] flex space-x-4 sm:space-x-8 text-sm overflow-x-auto no-scrollbar whitespace-nowrap">
         {tabs.map(t => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
-            className={`pb-3 font-semibold transition border-b-2 ${
+            className={`pb-3 font-semibold transition border-b-2 shrink-0 ${
               activeTab === t.id 
                 ? "border-[#2563eb] text-[#2563eb]" 
                 : "border-transparent text-[#545b64] hover:text-[#16191f]"
@@ -1077,10 +1197,10 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
       {activeTab === "objects" && (
         <div className="bg-white border border-[#eaeded] rounded shadow-sm overflow-hidden space-y-0">
           {/* Action Toolbar */}
-          <div className="p-3 border-b border-[#eaeded] flex flex-wrap items-center justify-between gap-3 bg-[#fbfbfb]">
+          <div className="p-3 border-b border-[#eaeded] flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[#fbfbfb]">
             {/* Search & Breadcrumb Bar */}
-            <div className="flex items-center space-x-2 flex-1 min-w-[280px]">
-              <div className="relative flex-1 max-w-xs">
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1">
+              <div className="relative flex-1 min-w-[180px]">
                 <input
                   type="text"
                   value={search}
@@ -1092,7 +1212,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
               </div>
 
               {/* Show Versions Toggle */}
-              <label className="flex items-center space-x-1.5 text-xs text-[#545b64] cursor-pointer select-none pl-2 border-l border-[#eaeded]">
+              <label className="flex items-center space-x-1.5 text-xs text-[#545b64] cursor-pointer select-none pl-2 border-l border-[#eaeded] shrink-0">
                 <input
                   type="checkbox"
                   checked={showVersions}
@@ -1104,14 +1224,14 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
             </div>
 
             {/* Selection Actions */}
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={handleDownloadSelected}
                 disabled={selectedKeys.size !== 1}
-                className="h-8 px-3 bg-white hover:bg-[#fafafa] disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
+                className="h-8 px-2.5 sm:px-3 bg-white hover:bg-[#fafafa] disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
               >
                 <span>⬇</span>
-                <span>Download</span>
+                <span className="hidden xs:inline sm:inline">Download</span>
               </button>
 
               <button
@@ -1124,17 +1244,17 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
                   }
                 }}
                 disabled={selectedKeys.size !== 1}
-                className="h-8 px-3 bg-white hover:bg-blue-50 disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#2563eb] transition flex items-center space-x-1"
+                className="h-8 px-2.5 sm:px-3 bg-white hover:bg-blue-50 disabled:opacity-40 disabled:hover:bg-white border border-[#aab7b8] rounded text-xs font-semibold text-[#2563eb] transition flex items-center space-x-1"
                 title="Copiar URL pública direta do objeto selecionado"
               >
                 <span>🔗</span>
-                <span>Copiar Link Público</span>
+                <span className="hidden xs:inline sm:inline">Copiar Link Público</span>
               </button>
 
               <button
                 onClick={() => setIsDeleteModalOpen(true)}
                 disabled={selectedKeys.size === 0}
-                className="h-8 px-3 bg-white hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white border border-red-300 rounded text-xs font-semibold text-red-600 transition flex items-center space-x-1"
+                className="h-8 px-2.5 sm:px-3 bg-white hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-white border border-red-300 rounded text-xs font-semibold text-red-600 transition flex items-center space-x-1"
               >
                 <span>🗑️</span>
                 <span>Delete ({selectedKeys.size})</span>
@@ -1151,10 +1271,10 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
           </div>
 
           {/* S3 URI Path Bar */}
-          <div className="px-4 py-2 bg-slate-50 border-b border-[#eaeded] flex items-center justify-between text-xs text-[#545b64]">
-            <div className="flex items-center space-x-2 font-mono">
-              <span className="text-[#aab7b8]">Current path:</span>
-              <span className="text-[#16191f] font-semibold">s3://{bucket}/{currentPrefix}</span>
+          <div className="px-3 sm:px-4 py-2 bg-slate-50 border-b border-[#eaeded] flex flex-wrap items-center justify-between gap-2 text-xs text-[#545b64]">
+            <div className="flex items-center space-x-2 font-mono truncate max-w-full">
+              <span className="text-[#aab7b8] shrink-0">Current path:</span>
+              <span className="text-[#16191f] font-semibold truncate">s3://{bucket}/{currentPrefix}</span>
             </div>
             {currentPrefix && (
               <button
@@ -1163,7 +1283,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
                   parts.pop();
                   setCurrentPrefix(parts.length > 0 ? parts.join("/") + "/" : "");
                 }}
-                className="text-[#2563eb] hover:underline font-semibold flex items-center space-x-1"
+                className="text-[#2563eb] hover:underline font-semibold flex items-center space-x-1 shrink-0"
               >
                 <span>&uarr; Up one level</span>
               </button>
@@ -1193,7 +1313,7 @@ function AwsBucketDetailView({ bucket, activeTab, setActiveTab, onBack, addToast
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-[#16191f]">
+              <table className="w-full text-left text-xs text-[#16191f] min-w-[700px]">
                 <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
                   <tr>
                     <th className="w-8 px-4 py-3">
@@ -1627,15 +1747,15 @@ function AwsUploadModal({ bucket, currentPrefix, onClose, onUploaded, addToast }
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
-      <div className="w-full max-w-2xl bg-white rounded-lg shadow-2xl border border-slate-300 p-6 my-8 space-y-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-2xl bg-white rounded-lg shadow-2xl border border-slate-300 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#eaeded] pb-3">
           <div>
-            <h2 className="text-lg font-bold text-[#16191f]">Upload files and folders</h2>
-            <p className="text-xs text-[#545b64]">Destination: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[#2563eb]">s3://{bucket}/{currentPrefix}</code></p>
+            <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Upload files and folders</h2>
+            <p className="text-xs text-[#545b64] truncate max-w-xs sm:max-w-md">Destination: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[#2563eb]">s3://{bucket}/{currentPrefix}</code></p>
           </div>
-          <button onClick={onClose} disabled={uploading} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold">✕</button>
+          <button onClick={onClose} disabled={uploading} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold p-1">✕</button>
         </div>
 
         {/* Drag & Drop Area */}
@@ -1643,7 +1763,7 @@ function AwsUploadModal({ bucket, currentPrefix, onClose, onUploaded, addToast }
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`border-2 border-dashed rounded-lg p-8 text-center transition flex flex-col items-center justify-center space-y-3 ${
+          className={`border-2 border-dashed rounded-lg p-5 sm:p-8 text-center transition flex flex-col items-center justify-center space-y-3 ${
             isDragging ? "border-[#2563eb] bg-blue-50/50" : "border-[#aab7b8] hover:border-[#545b64] bg-slate-50/50"
           }`}
         >
@@ -1688,7 +1808,7 @@ function AwsUploadModal({ bucket, currentPrefix, onClose, onUploaded, addToast }
                     {/* Progress Bar / Status */}
                     <div className="flex items-center space-x-3">
                       {prog ? (
-                        <div className="w-32 flex items-center space-x-2">
+                        <div className="w-24 sm:w-32 flex items-center space-x-2">
                           <div className="flex-1 bg-slate-200 rounded-full h-2 overflow-hidden">
                             <div 
                               className={`h-full transition-all duration-200 ${
@@ -1722,7 +1842,7 @@ function AwsUploadModal({ bucket, currentPrefix, onClose, onUploaded, addToast }
         )}
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-end space-x-3 pt-3 border-t border-[#eaeded]">
+        <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
           <button
             onClick={onClose}
             disabled={uploading}
@@ -1733,7 +1853,7 @@ function AwsUploadModal({ bucket, currentPrefix, onClose, onUploaded, addToast }
           <button
             onClick={startUpload}
             disabled={files.length === 0 || uploading}
-            className="h-8 px-5 bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-40 text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+            className="h-8 px-5 bg-[#2563eb] hover:bg-[#1d4ed8] disabled:opacity-40 text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
           >
             {uploading ? (
               <>
@@ -1780,11 +1900,11 @@ function AwsCreateFolderModal({ bucket, currentPrefix, onClose, onCreated, addTo
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
-      <div className="w-full max-w-md bg-white rounded-lg shadow-2xl border border-slate-300 p-6 space-y-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-md bg-white rounded-lg shadow-2xl border border-slate-300 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
         <div className="flex items-center justify-between border-b border-[#eaeded] pb-3">
-          <h2 className="text-lg font-bold text-[#16191f]">Create folder</h2>
-          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold">✕</button>
+          <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Create folder</h2>
+          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold p-1">✕</button>
         </div>
 
         {error && (
@@ -1805,12 +1925,12 @@ function AwsCreateFolderModal({ bucket, currentPrefix, onClose, onCreated, addTo
               autoFocus
               className="w-full h-9 px-3 border border-[#aab7b8] rounded text-xs text-[#16191f] focus:outline-none focus:border-[#2563eb]"
             />
-            <p className="text-[11px] text-[#545b64] mt-1">
+            <p className="text-[11px] text-[#545b64] mt-1 truncate">
               Destination: <code className="font-mono bg-slate-100 px-1 rounded text-slate-800">s3://{bucket}/{currentPrefix}{folderName}/</code>
             </p>
           </div>
 
-          <div className="flex items-center justify-end space-x-3 pt-3 border-t border-[#eaeded]">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
             <button
               type="button"
               onClick={onClose}
@@ -1821,7 +1941,7 @@ function AwsCreateFolderModal({ bucket, currentPrefix, onClose, onCreated, addTo
             <button
               type="submit"
               disabled={loading || !folderName.trim()}
-              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition"
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center"
             >
               {loading ? "Creating..." : "Create folder"}
             </button>
@@ -1861,11 +1981,11 @@ function AwsDeleteObjectsModal({ bucket, keys, onClose, onDeleted, addToast }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
-      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-red-200 p-6 space-y-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-red-200 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
         <div className="flex items-center space-x-2 text-red-600">
           <span className="text-xl">⚠️</span>
-          <h2 className="text-lg font-bold text-[#16191f]">Delete objects ({keys.length})</h2>
+          <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Delete objects ({keys.length})</h2>
         </div>
 
         <p className="text-xs text-[#545b64]">
@@ -1900,7 +2020,7 @@ function AwsDeleteObjectsModal({ bucket, keys, onClose, onDeleted, addToast }) {
             />
           </div>
 
-          <div className="flex items-center justify-end space-x-3 pt-3 border-t border-[#eaeded]">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
             <button
               type="button"
               onClick={onClose}
@@ -1911,7 +2031,7 @@ function AwsDeleteObjectsModal({ bucket, keys, onClose, onDeleted, addToast }) {
             <button
               type="submit"
               disabled={!isConfirmed || loading}
-              className="h-8 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold rounded shadow-sm transition"
+              className="h-8 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center"
             >
               {loading ? "Deleting..." : "Delete objects"}
             </button>
@@ -1985,24 +2105,24 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
-      <div className="w-full max-w-3xl bg-white rounded-lg shadow-2xl border border-slate-300 p-6 space-y-4 my-8">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-3xl bg-white rounded-lg shadow-2xl border border-slate-300 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[#eaeded] pb-3">
-          <div className="flex items-center space-x-2">
-            <span className="text-xl">{getFileIcon(object.key)}</span>
-            <div>
-              <h2 className="text-base font-bold text-[#16191f] truncate max-w-lg">{object.key}</h2>
+          <div className="flex items-center space-x-2 truncate pr-2">
+            <span className="text-xl shrink-0">{getFileIcon(object.key)}</span>
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-bold text-[#16191f] truncate max-w-[200px] sm:max-w-lg">{object.key}</h2>
               <p className="text-xs text-[#545b64]">Object details and live preview</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold">✕</button>
+          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold p-1">✕</button>
         </div>
 
         {/* Quick Actions Bar */}
         <div className="p-3 bg-slate-50 border border-[#eaeded] rounded space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={handleDownload}
                 className="h-8 px-3 bg-white hover:bg-slate-50 border border-[#aab7b8] rounded text-xs font-semibold text-[#16191f] transition flex items-center space-x-1"
@@ -2039,13 +2159,13 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
           </div>
 
           {/* Direct Public Link Box */}
-          <div className="flex items-center space-x-2 pt-2 border-t border-slate-200/80">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2 border-t border-slate-200/80">
             <span className="text-[11px] font-semibold text-slate-500 whitespace-nowrap">🌐 Link Público Direto:</span>
             <input
               type="text"
               readOnly
               value={`${window.location.origin}/${bucket}/${object.key}`}
-              className="flex-1 h-7 px-2 bg-white border border-slate-300 rounded text-xs font-mono text-slate-800 select-all focus:outline-none"
+              className="w-full sm:flex-1 h-7 px-2 bg-white border border-slate-300 rounded text-xs font-mono text-slate-800 select-all focus:outline-none"
             />
             <button
               type="button"
@@ -2054,7 +2174,7 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
                 navigator.clipboard.writeText(pubUrl);
                 addToast("URL Pública copiada com sucesso!", "success");
               }}
-              className="h-7 px-3 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded text-xs font-bold transition shadow-xs whitespace-nowrap"
+              className="h-7 px-3 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded text-xs font-bold transition shadow-xs whitespace-nowrap self-end sm:self-auto"
             >
               Copiar Link
             </button>
@@ -2062,20 +2182,20 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
         </div>
 
         {/* Live Preview Area */}
-        <div className="border border-[#eaeded] rounded-lg p-4 bg-slate-100 min-h-[220px] flex items-center justify-center">
+        <div className="border border-[#eaeded] rounded-lg p-3 sm:p-4 bg-slate-100 min-h-[200px] flex items-center justify-center">
           {loading ? (
             <div className="text-xs text-[#545b64] flex items-center space-x-2">
               <span className="animate-spin text-lg text-[#2563eb]">🔄</span>
               <span>Carregando preview...</span>
             </div>
           ) : isImg && blobUrl ? (
-            <img src={blobUrl} alt={object.key} className="max-h-96 max-w-full rounded shadow object-contain" />
+            <img src={blobUrl} alt={object.key} className="max-h-80 sm:max-h-96 max-w-full rounded shadow object-contain" />
           ) : isTxt && textContent !== null ? (
-            <div className="w-full max-h-96 overflow-auto bg-slate-900 text-slate-100 p-4 rounded text-xs font-mono">
+            <div className="w-full max-h-80 sm:max-h-96 overflow-auto bg-slate-900 text-slate-100 p-3 sm:p-4 rounded text-xs font-mono">
               <pre className="whitespace-pre-wrap select-text">{textContent}</pre>
             </div>
           ) : (
-            <div className="text-center space-y-2">
+            <div className="text-center space-y-2 p-4">
               <span className="text-4xl">{getFileIcon(object.key)}</span>
               <p className="text-xs text-[#545b64]">Preview visual não suportado para este tipo de arquivo.</p>
               <button
@@ -2089,20 +2209,20 @@ function AwsObjectPreviewModal({ bucket, object, onClose, onDeleted, addToast })
         </div>
 
         {/* Metadata Properties Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-          <div className="p-3 bg-slate-50 border border-[#eaeded] rounded">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 text-xs">
+          <div className="p-2.5 sm:p-3 bg-slate-50 border border-[#eaeded] rounded">
             <span className="text-[11px] text-[#545b64] block">Size</span>
             <span className="font-bold text-[#16191f] font-mono">{formatBytes(meta.size)}</span>
           </div>
-          <div className="p-3 bg-slate-50 border border-[#eaeded] rounded">
+          <div className="p-2.5 sm:p-3 bg-slate-50 border border-[#eaeded] rounded">
             <span className="text-[11px] text-[#545b64] block">Content Type</span>
             <span className="font-bold text-[#16191f] truncate block">{meta.contentType || "binary/octet-stream"}</span>
           </div>
-          <div className="p-3 bg-slate-50 border border-[#eaeded] rounded">
+          <div className="p-2.5 sm:p-3 bg-slate-50 border border-[#eaeded] rounded">
             <span className="text-[11px] text-[#545b64] block">ETag</span>
             <span className="font-bold text-[#16191f] font-mono truncate block" title={meta.etag}>{meta.etag || "-"}</span>
           </div>
-          <div className="p-3 bg-slate-50 border border-[#eaeded] rounded">
+          <div className="p-2.5 sm:p-3 bg-slate-50 border border-[#eaeded] rounded">
             <span className="text-[11px] text-[#545b64] block">Storage Class</span>
             <span className="font-bold text-[#16191f]">{meta.storageClass || "STANDARD"}</span>
           </div>
@@ -2150,14 +2270,14 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
-      <div className="w-full max-w-xl bg-white rounded-lg shadow-2xl border border-slate-300 p-6 my-8">
-        <div className="flex items-center justify-between border-b border-[#eaeded] pb-4 mb-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-xl bg-white rounded-lg shadow-2xl border border-slate-300 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between border-b border-[#eaeded] pb-3 mb-4">
           <div>
-            <h2 className="text-lg font-bold text-[#16191f]">Create bucket</h2>
+            <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Create bucket</h2>
             <p className="text-xs text-[#545b64]">General configuration for your new Z3S storage container.</p>
           </div>
-          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold">✕</button>
+          <button onClick={onClose} className="text-[#545b64] hover:text-[#16191f] text-sm font-bold p-1">✕</button>
         </div>
 
         {error && (
@@ -2261,7 +2381,7 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
           </div>
 
           {/* Footer Actions */}
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-4 border-t border-[#eaeded]">
             <button
               type="button"
               onClick={onClose}
@@ -2272,7 +2392,7 @@ function AwsCreateBucketModal({ onClose, onCreated, addToast }) {
             <button
               type="submit"
               disabled={loading}
-              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+              className="h-8 px-4 bg-[#2563eb] hover:bg-[#1d4ed8] active:bg-[#1e40af] text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
             >
               {loading ? (
                 <>
@@ -2327,19 +2447,19 @@ function AwsDeleteBucketModal({ bucketName, onClose, onDeleted, onOpenEmptyModal
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
-      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-red-200 p-6">
-        <div className="flex items-center space-x-2 text-red-600 mb-2">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-red-200 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
+        <div className="flex items-center space-x-2 text-red-600">
           <span className="text-xl">⚠️</span>
-          <h2 className="text-lg font-bold text-[#16191f]">Delete bucket</h2>
+          <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Delete bucket</h2>
         </div>
 
-        <p className="text-xs text-[#545b64] mb-4">
+        <p className="text-xs text-[#545b64]">
           A exclusão de um bucket é <strong>irreversível</strong>. Uma vez excluído, as configurações e o namespace serão liberados.
         </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r space-y-2">
+          <div className="p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r space-y-2">
             <p className="font-semibold">{error}</p>
             {isBucketNotEmpty && (
               <button
@@ -2356,7 +2476,7 @@ function AwsDeleteBucketModal({ bucketName, onClose, onDeleted, onOpenEmptyModal
         <form onSubmit={handleDelete} className="space-y-4">
           <div className="p-3 bg-slate-50 border border-[#eaeded] rounded text-xs space-y-1">
             <span className="text-[#545b64]">Bucket selecionado:</span>
-            <p className="font-mono font-bold text-[#16191f] text-sm">🪣 {bucketName}</p>
+            <p className="font-mono font-bold text-[#16191f] text-sm truncate">🪣 {bucketName}</p>
           </div>
 
           <div>
@@ -2374,7 +2494,7 @@ function AwsDeleteBucketModal({ bucketName, onClose, onDeleted, onOpenEmptyModal
             />
           </div>
 
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
             <button
               type="button"
               onClick={onClose}
@@ -2385,7 +2505,7 @@ function AwsDeleteBucketModal({ bucketName, onClose, onDeleted, onOpenEmptyModal
             <button
               type="submit"
               disabled={!isConfirmed || loading}
-              className="h-8 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+              className="h-8 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:hover:bg-red-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
             >
               {loading ? (
                 <>
@@ -2433,19 +2553,19 @@ function AwsEmptyBucketModal({ bucketName, onClose, onEmptied, addToast }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
-      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-amber-200 p-6">
-        <div className="flex items-center space-x-2 text-amber-600 mb-2">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-fade-in overflow-y-auto">
+      <div className="w-full max-w-lg bg-white rounded-lg shadow-2xl border border-amber-200 p-4 sm:p-6 my-auto max-h-[92vh] overflow-y-auto space-y-4">
+        <div className="flex items-center space-x-2 text-amber-600">
           <span className="text-xl">🧹</span>
-          <h2 className="text-lg font-bold text-[#16191f]">Empty bucket</h2>
+          <h2 className="text-base sm:text-lg font-bold text-[#16191f]">Empty bucket</h2>
         </div>
 
-        <p className="text-xs text-[#545b64] mb-4">
+        <p className="text-xs text-[#545b64]">
           Esvaziar o bucket <strong>{bucketName}</strong> excluirá <strong>todos os objetos e dados</strong> contidos nele de forma permanente.
         </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r">
+          <div className="p-3 bg-red-50 border-l-4 border-red-500 text-red-700 text-xs rounded-r">
             <p className="font-semibold">Erro ao esvaziar bucket:</p>
             <p>{error}</p>
           </div>
@@ -2472,7 +2592,7 @@ function AwsEmptyBucketModal({ bucketName, onClose, onEmptied, addToast }) {
             />
           </div>
 
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-[#eaeded]">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
             <button
               type="button"
               onClick={onClose}
@@ -2483,7 +2603,7 @@ function AwsEmptyBucketModal({ bucketName, onClose, onEmptied, addToast }) {
             <button
               type="submit"
               disabled={!isConfirmed || loading}
-              className="h-8 px-4 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:hover:bg-amber-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center space-x-1.5"
+              className="h-8 px-4 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 disabled:hover:bg-amber-600 text-white text-xs font-bold rounded shadow-sm transition flex items-center justify-center space-x-1.5"
             >
               {loading ? (
                 <>
@@ -3312,19 +3432,19 @@ function AwsBucketLifecycleManager({ bucket, addToast }) {
 
       {/* Modal: Adicionar Regra */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg border border-[#eaeded] overflow-hidden animate-fade-in">
-            <div className="px-5 py-4 border-b border-[#eaeded] flex items-center justify-between bg-[#fafafa]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg border border-[#eaeded] my-auto max-h-[92vh] overflow-y-auto animate-fade-in">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-[#eaeded] flex items-center justify-between bg-[#fafafa]">
               <h3 className="text-sm font-bold text-[#16191f]">Criar Regra de Ciclo de Vida</h3>
               <button
                 type="button"
                 onClick={() => setShowAddModal(false)}
-                className="text-[#545b64] hover:text-[#16191f] text-sm font-bold"
+                className="text-[#545b64] hover:text-[#16191f] text-sm font-bold p-1"
               >
                 ✕
               </button>
             </div>
-            <form onSubmit={handleAddRule} className="p-5 space-y-4">
+            <form onSubmit={handleAddRule} className="p-4 sm:p-5 space-y-4">
               <div>
                 <label className="block text-xs font-bold text-[#16191f] mb-1">
                   Nome da Regra (Rule ID) *
@@ -3352,7 +3472,7 @@ function AwsBucketLifecycleManager({ bucket, addToast }) {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-[#16191f] mb-1">
                     Expirar Objetos Após (Dias)
@@ -3379,7 +3499,7 @@ function AwsBucketLifecycleManager({ bucket, addToast }) {
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-[#eaeded]">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
@@ -3390,7 +3510,7 @@ function AwsBucketLifecycleManager({ bucket, addToast }) {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] disabled:opacity-50 text-white text-xs font-bold rounded shadow-sm"
+                  className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] disabled:opacity-50 text-white text-xs font-bold rounded shadow-sm flex items-center justify-center"
                 >
                   {saving ? "Salvando..." : "Salvar Regra"}
                 </button>
@@ -3549,7 +3669,7 @@ function AwsClusterMetricsView({ addToast }) {
             <h2 className="text-sm font-bold text-[#16191f] flex items-center space-x-2">
               <span>Topologia de Discos Reed-Solomon (4 Shards de Dados + 2 Shards de Paridade)</span>
             </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
               {[
                 { name: "Shard 01 (Data)", role: "Data", status: "Online", latency: "<0.4ms" },
                 { name: "Shard 02 (Data)", role: "Data", status: "Online", latency: "<0.3ms" },
@@ -3560,15 +3680,15 @@ function AwsClusterMetricsView({ addToast }) {
               ].map((disk, idx) => (
                 <div
                   key={idx}
-                  className={`p-3 rounded border text-xs space-y-1.5 ${
+                  className={`p-2.5 sm:p-3 rounded border text-xs space-y-1.5 ${
                     disk.role === "Parity"
                       ? "bg-purple-50/50 border-purple-200"
                       : "bg-blue-50/40 border-blue-200"
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-[#16191f]">{disk.name}</span>
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span className="font-bold text-[#16191f] text-[11px] sm:text-xs truncate">{disk.name}</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 ml-1"></span>
                   </div>
                   <div className="text-[11px] text-[#545b64] flex justify-between">
                     <span>Função:</span>
@@ -3578,7 +3698,7 @@ function AwsClusterMetricsView({ addToast }) {
                     <span>Latência:</span>
                     <span className="font-mono text-emerald-700 font-semibold">{disk.latency}</span>
                   </div>
-                  <div className="text-[10px] text-emerald-700 font-bold bg-white/80 py-0.5 px-1.5 rounded text-center border border-emerald-200">
+                  <div className="text-[10px] text-emerald-700 font-bold bg-white/80 py-0.5 px-1 rounded text-center border border-emerald-200 truncate">
                     Sincronizado (Direct I/O)
                   </div>
                 </div>
@@ -3587,10 +3707,10 @@ function AwsClusterMetricsView({ addToast }) {
           </div>
 
           {/* Subsystems Status Table */}
-          <div className="p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-4">
+          <div className="p-4 sm:p-5 bg-white border border-[#eaeded] rounded shadow-sm space-y-4">
             <h2 className="text-sm font-bold text-[#16191f]">Status dos Subsistemas Internos do Z3S</h2>
-            <div className="border border-[#eaeded] rounded overflow-hidden">
-              <table className="w-full text-left text-xs border-collapse">
+            <div className="border border-[#eaeded] rounded overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse min-w-[580px]">
                 <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
                   <tr>
                     <th className="py-2.5 px-4">Subsistema</th>
@@ -3763,8 +3883,8 @@ function AwsIamKeysView({ addToast }) {
           <p className="text-xs text-[#545b64]">Clique em "+ Criar Access Key" para gerar novas credenciais.</p>
         </div>
       ) : (
-        <div className="border border-[#eaeded] rounded bg-white shadow-sm overflow-hidden">
-          <table className="w-full text-left text-xs border-collapse">
+        <div className="border border-[#eaeded] rounded bg-white shadow-sm overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse min-w-[560px]">
             <thead className="bg-[#fafafa] border-b border-[#eaeded] text-[#545b64] font-semibold">
               <tr>
                 <th className="py-2.5 px-4">Access Key ID</th>
@@ -3797,7 +3917,7 @@ function AwsIamKeysView({ addToast }) {
                   <td className="py-3 px-4 text-[#545b64]">
                     {k.created_at ? new Date(k.created_at).toLocaleString() : "-"}
                   </td>
-                  <td className="py-3 px-4 text-right">
+                  <td className="py-3 px-4 text-right whitespace-nowrap">
                     <button
                       type="button"
                       onClick={() => setKeyToDelete(k)}
@@ -3815,9 +3935,9 @@ function AwsIamKeysView({ addToast }) {
 
       {/* Modal: Chave Criada com Sucesso */}
       {createdKey && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg border border-[#eaeded] overflow-hidden animate-fade-in space-y-4">
-            <div className="px-5 py-4 border-b border-[#eaeded] bg-emerald-50 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg border border-[#eaeded] my-auto max-h-[92vh] overflow-y-auto animate-fade-in space-y-4">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-[#eaeded] bg-emerald-50 flex items-center justify-between">
               <div className="flex items-center space-x-2 text-emerald-800 font-bold text-sm">
                 <span>✓</span>
                 <span>Access Key Criada com Sucesso</span>
@@ -3825,13 +3945,13 @@ function AwsIamKeysView({ addToast }) {
               <button
                 type="button"
                 onClick={() => setCreatedKey(null)}
-                className="text-emerald-800 font-bold text-sm hover:opacity-80"
+                className="text-emerald-800 font-bold text-sm hover:opacity-80 p-1"
               >
                 ✕
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="p-4 sm:p-5 space-y-4">
               <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 space-y-1">
                 <p className="font-bold flex items-center space-x-1">
                   <span>⚠️</span>
@@ -3855,7 +3975,7 @@ function AwsIamKeysView({ addToast }) {
                     <button
                       type="button"
                       onClick={() => handleCopy(createdKey.access_key_id, "Access Key ID")}
-                      className="h-8 px-3 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs font-semibold"
+                      className="h-8 px-3 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs font-semibold shrink-0"
                     >
                       Copiar
                     </button>
@@ -3874,7 +3994,7 @@ function AwsIamKeysView({ addToast }) {
                     <button
                       type="button"
                       onClick={() => setShowSecret(!showSecret)}
-                      className="h-8 px-2.5 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs"
+                      className="h-8 px-2.5 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs shrink-0"
                       title={showSecret ? "Ocultar Secret" : "Mostrar Secret"}
                     >
                       {showSecret ? "🙈" : "👁️"}
@@ -3882,7 +4002,7 @@ function AwsIamKeysView({ addToast }) {
                     <button
                       type="button"
                       onClick={() => handleCopy(createdKey.secret_access_key, "Secret Access Key")}
-                      className="h-8 px-3 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs font-semibold"
+                      className="h-8 px-3 bg-slate-100 hover:bg-slate-200 border border-[#aab7b8] rounded text-xs font-semibold shrink-0"
                     >
                       Copiar
                     </button>
@@ -3890,11 +4010,11 @@ function AwsIamKeysView({ addToast }) {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between pt-4 border-t border-[#eaeded]">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-3 pt-4 border-t border-[#eaeded]">
                 <button
                   type="button"
                   onClick={handleDownloadCsv}
-                  className="h-8 px-3.5 bg-blue-50 hover:bg-blue-100 text-[#0073bb] border border-blue-300 rounded text-xs font-bold flex items-center space-x-1.5 transition"
+                  className="h-8 px-3.5 bg-blue-50 hover:bg-blue-100 text-[#0073bb] border border-blue-300 rounded text-xs font-bold flex items-center justify-center space-x-1.5 transition"
                 >
                   <span>📥</span>
                   <span>Baixar Arquivo .csv</span>
@@ -3903,7 +4023,7 @@ function AwsIamKeysView({ addToast }) {
                 <button
                   type="button"
                   onClick={() => setCreatedKey(null)}
-                  className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] text-white text-xs font-bold rounded shadow-sm"
+                  className="h-8 px-4 bg-[#ec7211] hover:bg-[#eb5f07] text-white text-xs font-bold rounded shadow-sm flex items-center justify-center"
                 >
                   Concluído
                 </button>
@@ -3915,27 +4035,27 @@ function AwsIamKeysView({ addToast }) {
 
       {/* Modal: Confirmar Exclusão de Chave */}
       {keyToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md border border-[#eaeded] overflow-hidden animate-fade-in space-y-4">
-            <div className="px-5 py-4 border-b border-[#eaeded] bg-[#fafafa] flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md border border-[#eaeded] my-auto max-h-[92vh] overflow-y-auto animate-fade-in space-y-4">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-[#eaeded] bg-[#fafafa] flex items-center justify-between">
               <h3 className="text-sm font-bold text-[#16191f]">Revogar Chave de Acesso</h3>
               <button
                 type="button"
                 onClick={() => setKeyToDelete(null)}
-                className="text-[#545b64] font-bold text-sm"
+                className="text-[#545b64] font-bold text-sm p-1"
               >
                 ✕
               </button>
             </div>
-            <div className="p-5 space-y-3">
+            <div className="p-4 sm:p-5 space-y-3">
               <p className="text-xs text-[#16191f]">
                 Tem certeza que deseja revogar permanentemente a chave de acesso{" "}
-                <span className="font-mono font-bold text-red-600">{keyToDelete.access_key_id}</span>?
+                <span className="font-mono font-bold text-red-600 break-all">{keyToDelete.access_key_id}</span>?
               </p>
               <p className="text-xs text-[#545b64]">
                 Qualquer aplicação ou script que utilize estas credenciais perderá o acesso imediatamente.
               </p>
-              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-[#eaeded]">
+              <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 pt-3 border-t border-[#eaeded]">
                 <button
                   type="button"
                   onClick={() => setKeyToDelete(null)}
@@ -3946,7 +4066,7 @@ function AwsIamKeysView({ addToast }) {
                 <button
                   type="button"
                   onClick={() => handleDeleteKey(keyToDelete.access_key_id)}
-                  className="h-8 px-4 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm"
+                  className="h-8 px-4 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm flex items-center justify-center"
                 >
                   Sim, Revogar Chave
                 </button>
@@ -4111,7 +4231,7 @@ function AwsReplicationView({ addToast }) {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#eaeded]">
         <div>
-          <h1 className="text-xl font-bold text-[#16191f] flex items-center space-x-2">
+          <h1 className="text-xl font-bold text-[#16191f] flex flex-wrap items-center gap-2">
             <span>Replicação P2P & Alta Disponibilidade (HA)</span>
             {isEnabled ? (
               <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded border border-emerald-300 flex items-center space-x-1.5">
@@ -4124,12 +4244,12 @@ function AwsReplicationView({ addToast }) {
               </span>
             )}
           </h1>
-          <p className="text-xs text-[#545b64]">
+          <p className="text-xs text-[#545b64] mt-1">
             Sincronização assíncrona nativa na camada de aplicação via AWS SigV4 (RFC 3986) com credenciais dinâmicas gerenciadas pelo usuário.
           </p>
         </div>
 
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <label className="flex items-center space-x-1.5 text-xs text-[#545b64] cursor-pointer select-none">
             <input
               type="checkbox"
@@ -4327,7 +4447,7 @@ function AwsReplicationView({ addToast }) {
               )}
 
               {/* Ações */}
-              <div className="pt-3 border-t border-[#eaeded] flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="pt-3 border-t border-[#eaeded] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                 <button
                   type="button"
                   onClick={handleTestConnection}
@@ -4338,7 +4458,7 @@ function AwsReplicationView({ addToast }) {
                   <span>{testing ? "Validando no Peer..." : "Testar Conexão e Credenciais"}</span>
                 </button>
 
-                <div className="w-full sm:w-auto flex items-center space-x-3">
+                <div className="w-full sm:w-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                   {isEnabled && (
                     <>
                       <button
@@ -4420,11 +4540,11 @@ function AwsReplicationView({ addToast }) {
 // ----------------------------------------------------------------------
 function ToastContainer({ toasts }) {
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col space-y-2">
+    <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:max-w-md z-50 flex flex-col space-y-2 pointer-events-none">
       {toasts.map(t => (
         <div
           key={t.id}
-          className={`px-4 py-2.5 rounded shadow-lg text-xs font-medium border flex items-center space-x-2 animate-fade-in ${
+          className={`pointer-events-auto px-4 py-2.5 rounded shadow-lg text-xs font-medium border flex items-center space-x-2 animate-fade-in ${
             t.type === "success" 
               ? "bg-[#f2f8fd] text-[#0073bb] border-[#0073bb]"
               : t.type === "error"
@@ -4432,8 +4552,8 @@ function ToastContainer({ toasts }) {
               : "bg-white text-[#16191f] border-[#aab7b8]"
           }`}
         >
-          <span>{t.type === "success" ? "✓" : t.type === "error" ? "⚠" : "ℹ"}</span>
-          <span>{t.message}</span>
+          <span className="shrink-0">{t.type === "success" ? "✓" : t.type === "error" ? "⚠" : "ℹ"}</span>
+          <span className="break-words">{t.message}</span>
         </div>
       ))}
     </div>
