@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         storage,
         erasure,
         credentials_store,
-        Some(metadata_dir),
+        Some(metadata_dir.clone()),
     ));
 
     // 5. Configura a replicação nativa para peer secundário se habilitada
@@ -111,7 +111,8 @@ async fn main() -> anyhow::Result<()> {
             secret_key.to_string(),
             Some(cli.peer_region),
         );
-        let repl_engine = ReplicationEngine::start(repl_config);
+        let outbox_dir = metadata_dir.join("replication_outbox");
+        let repl_engine = ReplicationEngine::start_with_outbox(repl_config, Some(outbox_dir));
         gateway_service.set_replication_engine(repl_engine);
     }
 

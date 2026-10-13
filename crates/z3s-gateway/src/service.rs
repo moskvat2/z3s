@@ -1,5 +1,6 @@
 use crate::gc::GcReport;
 use crate::lifecycle::{LifecycleEngine, LifecycleReport};
+use crate::metrics::MetricsCollector;
 use crate::replication::{
     ReplicationConfig, ReplicationEngine, ReplicationEvent, ReplicationUpdateRequest,
     REPLICATION_HEADER,
@@ -86,6 +87,17 @@ impl GatewayHttpResponse {
             status: 200,
             headers,
             body: Bytes::from(xml),
+        }
+    }
+
+    pub fn ok_json(json: String) -> Self {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        headers.insert("Content-Length".to_string(), json.len().to_string());
+        Self {
+            status: 200,
+            headers,
+            body: Bytes::from(json),
         }
     }
 
@@ -260,6 +272,7 @@ pub struct S3GatewayService {
     cors_configs: RwLock<HashMap<String, String>>,
     pub replication_engine: RwLock<Option<Arc<ReplicationEngine>>>,
     pub saved_replication_config: RwLock<Option<ReplicationConfig>>,
+    pub metrics: Arc<MetricsCollector>,
 }
 
 impl S3GatewayService {
@@ -409,7 +422,8 @@ impl S3GatewayService {
                             if !ep.trim().is_empty() && !ak.trim().is_empty() && !sk.trim().is_empty() {
                                 let cfg = ReplicationConfig::new(ep, ak, sk, stored.peer_region);
                                 if stored.enabled {
-                                    replication_engine = Some(ReplicationEngine::start(cfg.clone()));
+                                    let outbox = dir.join("replication_outbox");
+                                    replication_engine = Some(ReplicationEngine::start_with_outbox(cfg.clone(), Some(outbox)));
                                 }
                                 saved_replication_config = Some(cfg);
                             }
@@ -438,6 +452,7 @@ impl S3GatewayService {
             cors_configs: RwLock::new(cors_configs),
             replication_engine: RwLock::new(replication_engine),
             saved_replication_config: RwLock::new(saved_replication_config),
+            metrics: Arc::new(MetricsCollector::new()),
         }
     }
 
@@ -830,7 +845,21 @@ impl S3GatewayService {
     }
 
     /// Processa uma requisição HTTP REST completa
+    /// Processa uma requisição HTTP REST completa registrando métricas de observabilidade
     pub fn handle_request(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&str>,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> GatewayHttpResponse {
+        let resp = self.dispatch_request(method, path, query, headers, body);
+        self.metrics.record_request(method, resp.status, body.len(), resp.body.len());
+        resp
+    }
+
+    fn dispatch_request(
         &self,
         method: &str,
         path: &str,
@@ -857,6 +886,22 @@ impl S3GatewayService {
                 headers: resp_headers,
                 body: Bytes::new(),
             };
+        }
+
+        // 2. Healthchecks especializados para orquestradores (Kubernetes, Docker Swarm, Uptime Kuma)
+        if method == "GET" && (path == "/health" || path == "/health/") {
+            return self.handle_health();
+        }
+        if method == "GET" && path == "/health/live" {
+            return self.handle_health_live();
+        }
+        if method == "GET" && path == "/health/ready" {
+            return self.handle_health_ready();
+        }
+
+        // 3. Endpoint de Métricas do Prometheus / OpenMetrics
+        if method == "GET" && path == "/metrics" {
+            return self.handle_prometheus_metrics();
         }
 
         // 2. Rota para servir o Z3S Web Console Embutido (React 18 SPA)
@@ -1400,6 +1445,103 @@ impl S3GatewayService {
         GatewayHttpResponse::no_content()
     }
 
+    fn handle_health(&self) -> GatewayHttpResponse {
+        let uptime = self.metrics.uptime_seconds() as u64;
+        let json = serde_json::json!({
+            "status": "UP",
+            "version": env!("CARGO_PKG_VERSION"),
+            "uptime_seconds": uptime,
+            "checks": {
+                "storage": "UP",
+                "metadata": "UP"
+            }
+        });
+        GatewayHttpResponse::ok_json(json.to_string())
+    }
+
+    fn handle_health_live(&self) -> GatewayHttpResponse {
+        let json = serde_json::json!({
+            "status": "UP"
+        });
+        GatewayHttpResponse::ok_json(json.to_string())
+    }
+
+    fn handle_health_ready(&self) -> GatewayHttpResponse {
+        let storage_ok = self.storage.root_dir().exists();
+        let metadata_ok = match self.metadata_dir.as_ref() {
+            Some(d) => d.exists(),
+            None => true,
+        };
+
+        if storage_ok && metadata_ok {
+            let json = serde_json::json!({
+                "status": "READY",
+                "storage": "UP",
+                "metadata": "UP"
+            });
+            GatewayHttpResponse::ok_json(json.to_string())
+        } else {
+            let json = serde_json::json!({
+                "status": "NOT_READY",
+                "storage": if storage_ok { "UP" } else { "DOWN" },
+                "metadata": if metadata_ok { "UP" } else { "DOWN" }
+            });
+            let mut headers = HashMap::new();
+            headers.insert("Content-Type".to_string(), "application/json".to_string());
+            headers.insert("Content-Length".to_string(), json.to_string().len().to_string());
+            GatewayHttpResponse {
+                status: 503,
+                headers,
+                body: Bytes::from(json.to_string()),
+            }
+        }
+    }
+
+    fn handle_prometheus_metrics(&self) -> GatewayHttpResponse {
+        let buckets_count = self.buckets.read().unwrap().len();
+        let objects_count = self.objects.read().unwrap().values().map(|v| v.len()).sum::<usize>();
+        let logical_bytes: u64 = self.objects.read().unwrap().values().flatten().map(|m| m.metadata.size).sum();
+
+        let extents_dir = self.storage.root_dir().join("extents");
+        let mut extents_count = 0;
+        let mut physical_bytes = 0u64;
+        if let Ok(entries) = std::fs::read_dir(&extents_dir) {
+            for e in entries.flatten() {
+                if e.path().extension().and_then(|ext| ext.to_str()) == Some("z3se") {
+                    extents_count += 1;
+                    physical_bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+
+        let outbox_pending = if let Some(ref engine) = *self.replication_engine.read().unwrap() {
+            engine.get_pending_outbox_count()
+        } else {
+            0
+        };
+
+        let body = self.metrics.render_prometheus(
+            buckets_count,
+            objects_count,
+            logical_bytes,
+            physical_bytes,
+            extents_count,
+            outbox_pending,
+        );
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Content-Type".to_string(),
+            "text/plain; version=0.0.4; charset=utf-8".to_string(),
+        );
+        headers.insert("Content-Length".to_string(), body.len().to_string());
+        GatewayHttpResponse {
+            status: 200,
+            headers,
+            body: Bytes::from(body),
+        }
+    }
+
     fn handle_cluster_metrics(&self) -> GatewayHttpResponse {
         let buckets_count = self.buckets.read().unwrap().len();
         let objects_count = self.objects.read().unwrap().values().map(|v| v.len()).sum::<usize>();
@@ -1449,8 +1591,9 @@ impl S3GatewayService {
                     "peer_access_key": engine.config.peer_access_key,
                     "peer_region": engine.config.peer_region,
                     "protocol": "AWS SigV4 RFC 3986",
-                    "mode": "Asynchronous Real-Time P2P",
-                    "health": "ONLINE"
+                    "mode": "Asynchronous Real-Time P2P + Resilient Outbox",
+                    "health": "ONLINE",
+                    "outbox_pending_events": engine.get_pending_outbox_count()
                 })
             } else {
                 serde_json::json!({
@@ -1485,9 +1628,10 @@ impl S3GatewayService {
                 "peer_region": engine.config.peer_region,
                 "has_secret_key": !engine.config.peer_secret_key.is_empty(),
                 "protocol": "AWS SigV4 RFC 3986",
-                "mode": "Asynchronous Real-Time P2P",
+                "mode": "Asynchronous Real-Time P2P + Resilient Outbox",
                 "anti_loop_header": "x-z3s-replication",
-                "health": "ONLINE"
+                "health": "ONLINE",
+                "outbox_pending_events": engine.get_pending_outbox_count()
             })
         } else if let Some(ref saved) = *saved_guard {
             serde_json::json!({
@@ -1583,7 +1727,8 @@ impl S3GatewayService {
             };
 
             let config = ReplicationConfig::new(ep, ak, sk, Some(region));
-            let engine = ReplicationEngine::start(config.clone());
+            let outbox = self.metadata_dir.as_ref().map(|d| d.join("replication_outbox"));
+            let engine = ReplicationEngine::start_with_outbox(config.clone(), outbox);
 
             {
                 let mut engine_guard = self.replication_engine.write().unwrap();
@@ -4721,6 +4866,59 @@ mod tests {
         let resp_go = service_reloaded.handle_request("GET", "/meu-bucket/arquivo.txt", None, &headers, &[]);
         assert_eq!(resp_go.status, 200);
         assert_eq!(resp_go.body.as_ref(), body);
+    }
+
+    #[test]
+    fn test_health_and_prometheus_metrics_endpoints() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        let meta_dir = temp_dir.path().join("meta");
+
+        let storage = Arc::new(StorageEngine::open(&data_dir, 1024 * 1024).unwrap());
+        let erasure = Arc::new(ErasureEngine::new(4, 2).unwrap());
+        let credentials = Arc::new(InMemoryCredentialsStore::new());
+
+        let service = S3GatewayService::new_with_metadata(
+            Uuid::new_v4(),
+            storage,
+            erasure,
+            credentials,
+            Some(meta_dir),
+        );
+
+        let headers = HashMap::new();
+
+        // 1. Testa /health
+        let resp_health = service.handle_request("GET", "/health", None, &headers, &[]);
+        assert_eq!(resp_health.status, 200);
+        let val_health: serde_json::Value = serde_json::from_slice(&resp_health.body).unwrap();
+        assert_eq!(val_health["status"], "UP");
+
+        // 2. Testa /health/live
+        let resp_live = service.handle_request("GET", "/health/live", None, &headers, &[]);
+        assert_eq!(resp_live.status, 200);
+        let val_live: serde_json::Value = serde_json::from_slice(&resp_live.body).unwrap();
+        assert_eq!(val_live["status"], "UP");
+
+        // 3. Testa /health/ready
+        let resp_ready = service.handle_request("GET", "/health/ready", None, &headers, &[]);
+        assert_eq!(resp_ready.status, 200);
+        let val_ready: serde_json::Value = serde_json::from_slice(&resp_ready.body).unwrap();
+        assert_eq!(val_ready["status"], "READY");
+
+        // 4. Cria bucket e faz PUT para gerar métricas
+        let _ = service.handle_request("PUT", "/metrics-bucket", None, &headers, &[]);
+        let _ = service.handle_request("PUT", "/metrics-bucket/doc.txt", None, &headers, b"METRICS TEST CONTENT");
+
+        // 5. Testa /metrics (Prometheus OpenMetrics format)
+        let resp_metrics = service.handle_request("GET", "/metrics", None, &headers, &[]);
+        assert_eq!(resp_metrics.status, 200);
+        let body_str = String::from_utf8_lossy(&resp_metrics.body);
+        assert!(body_str.contains("z3s_server_uptime_seconds"));
+        assert!(body_str.contains("z3s_http_requests_total"));
+        assert!(body_str.contains("z3s_buckets_total 1"));
+        assert!(body_str.contains("z3s_objects_total 1"));
+        assert!(body_str.contains("z3s_storage_logical_bytes 20"));
     }
 }
 

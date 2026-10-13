@@ -4,6 +4,7 @@
 
 pub mod gc;
 pub mod lifecycle;
+pub mod metrics;
 pub mod replication;
 pub mod router;
 pub mod server;
@@ -12,6 +13,7 @@ pub mod xml;
 
 pub use gc::{GarbageCollector, GcReport};
 pub use lifecycle::{LifecycleEngine, LifecycleReport};
+pub use metrics::MetricsCollector;
 pub use replication::{ReplicationConfig, ReplicationEngine, ReplicationEvent, REPLICATION_HEADER};
 pub use router::{S3Action, S3Router};
 pub use server::HttpServer;
