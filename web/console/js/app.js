@@ -290,18 +290,6 @@ function AwsGlobalHeader({ session, sidebarCollapsed, onToggleSidebar, onLogout,
         </button>
       </div>
 
-      {/* Center Search Bar */}
-      <div className="hidden md:flex flex-1 max-w-md mx-8">
-        <div className="relative w-full">
-          <input 
-            type="text" 
-            placeholder="Pesquisar buckets, objetos ou configurações..." 
-            className="w-full h-8 pl-8 pr-3 bg-[#0e1622] border border-[#3e4f67] rounded text-xs text-slate-200 placeholder-[#879596] focus:outline-none focus:border-[#2563eb]"
-          />
-          <span className="absolute left-2.5 top-2 text-xs text-[#879596]">🔍</span>
-        </div>
-      </div>
-
       {/* Right: Region & Account */}
       <div className="flex items-center space-x-3 text-xs">
         <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 bg-[#232f3e] border border-[#3e4f67] rounded text-slate-200">
